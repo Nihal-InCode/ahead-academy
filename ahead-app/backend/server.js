@@ -547,6 +547,17 @@ app.use(cors({
 app.use(express.json());
 app.use('/teachers', express.static(TEACHER_PHOTO_DIR));
 
+// ── Normalize /api prefix so /api/login and /login both match seamlessly ──
+app.use((req, res, next) => {
+    const nativeApiPrefixes = ['/api/substitute/', '/api/push/', '/api/timetable/', '/api/track-event', '/api/namaz-session'];
+    const isNativeApi = nativeApiPrefixes.some(prefix => req.path.startsWith(prefix));
+    
+    if (req.path.startsWith('/api') && !isNativeApi) {
+        req.url = req.url.replace(/^\/api/, '') || '/';
+    }
+    next();
+});
+
 // Console Middleware for Debugging
 app.use((req, res, next) => {
     console.log(`[${new Date().toLocaleTimeString()}] ${req.method} ${req.url}`);

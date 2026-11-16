@@ -4,8 +4,12 @@ export function getBaseUrl() {
     if (process.env.NEXT_PUBLIC_API_URL) {
         return process.env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
     }
-    if (typeof window !== 'undefined' && window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        return `${window.location.protocol}//${window.location.hostname}:8080`;
+    if (typeof window !== 'undefined') {
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+            return 'http://localhost:8080';
+        }
+        // On remote hosts (Vercel) where NEXT_PUBLIC_API_URL is missing, use the Next.js proxy route
+        return '/api/proxy';
     }
     return 'http://localhost:8080';
 }

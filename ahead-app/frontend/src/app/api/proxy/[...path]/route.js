@@ -10,9 +10,7 @@ async function proxy(request, params) {
     const path = segments.join('/');
     
     // The Railway backend URL
-    const backendBase = process.env.NODE_ENV === 'development'
-        ? 'http://localhost:8080'
-        : 'https://markhins-webapp.up.railway.app';
+    const backendBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8080').replace(/\/+$/, '');
     const targetUrl = `${backendBase}/${path}${request.nextUrl.search}`;
 
     console.log(`[Proxy] ${request.method} ${request.nextUrl.pathname} -> ${targetUrl}`);
