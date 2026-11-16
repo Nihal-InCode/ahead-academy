@@ -1,13 +1,14 @@
-const CACHE_NAME = 'markhins-v2';
+const CACHE_NAME = 'ahead-academy-v1';
 const STATIC_ASSETS = [
   '/',
   '/icon-192.png',
   '/icon-512.png',
+  '/manifest.webmanifest'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).catch(() => {})
   );
   self.skipWaiting();
 });
@@ -24,35 +25,53 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  // Network-First for HTML navigation so updates reflect immediately
+  const url = new URL(event.request.url);
+
+  // Bypass cache completely for API calls, Railway backend, and WebAuthn challenges
+  if (
+    url.pathname.startsWith('/api/') ||
+    url.hostname.includes('railway.app') ||
+    url.port === '8080' ||
+    url.pathname.includes('/login') ||
+    url.pathname.includes('/health')
+  ) {
+    return;
+  }
+
+  // Network-First for HTML navigation pages
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() => caches.match(event.request))
+      fetch(event.request).catch(() => caches.match(event.request) || caches.match('/'))
     );
     return;
   }
 
+  // Stale-While-Revalidate for static assets
   event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        if (response.status === 200) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(event.request).then((cachedResponse) => {
+      const fetchPromise = fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => cachedResponse);
+
+      return cachedResponse || fetchPromise;
+    })
   );
 });
 
 // Push Notification Handling
 self.addEventListener('push', (event) => {
   let data = {
-    title: 'MARKHINS HUB Notification',
-    body: 'You have a new notification from MARKHINS HUB.',
+    title: 'Ahead Academy Notification',
+    body: 'You have a new update from Ahead Academy.',
     icon: '/icon-192.png',
     badge: '/icon-192.png',
-    data: { url: '/teachers' }
+    data: { url: '/reports' }
   };
 
   if (event.data) {
@@ -69,9 +88,9 @@ self.addEventListener('push', (event) => {
     badge: data.badge || '/icon-192.png',
     sound: data.sound || '/sounds/notification.mp3',
     vibrate: [200, 100, 200, 100, 300],
-    data: data.data || { url: '/teachers' },
+    data: data.data || { url: '/reports' },
     actions: [
-      { action: 'open', title: 'Open Hub' },
+      { action: 'open', title: 'Open App' },
       { action: 'close', title: 'Dismiss' }
     ]
   };
@@ -86,7 +105,7 @@ self.addEventListener('notificationclick', (event) => {
 
   if (event.action === 'close') return;
 
-  const targetUrl = (event.notification.data && event.notification.data.url) ? event.notification.data.url : '/teachers';
+  const targetUrl = (event.notification.data && event.notification.data.url) ? event.notification.data.url : '/reports';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {

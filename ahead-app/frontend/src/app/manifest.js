@@ -4,23 +4,38 @@ export default function manifest() {
         short_name: 'Ahead Academy',
         description: 'Ahead Academy — Attendance & Academic Management System',
         start_url: '/',
+        id: '/',
         scope: '/',
         display: 'standalone',
-        background_color: '#ffffff',
+        orientation: 'portrait',
+        background_color: '#082231',
         theme_color: '#082231',
+        categories: ['education', 'productivity'],
         icons: [
             {
                 src: '/icon-192.png',
                 sizes: '192x192',
                 type: 'image/png',
-                purpose: 'any maskable',
+                purpose: 'any',
+            },
+            {
+                src: '/icon-192.png',
+                sizes: '192x192',
+                type: 'image/png',
+                purpose: 'maskable',
             },
             {
                 src: '/icon-512.png',
                 sizes: '512x512',
                 type: 'image/png',
-                purpose: 'any maskable',
+                purpose: 'any',
+            },
+            {
+                src: '/icon-512.png',
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'maskable',
             },
         ],
-    }
+    };
 }

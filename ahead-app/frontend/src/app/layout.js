@@ -3,6 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { LoadingProvider } from "@/context/LoadingContext";
 import PushNotificationManager from "@/components/PushNotificationManager";
+import PwaInstallPrompt from "@/components/PwaInstallPrompt";
 import BottomNav from "@/components/BottomNav";
 import Script from "next/script";
 
@@ -18,12 +19,16 @@ const geistMono = Geist_Mono({
 
 export const metadata = {
   title: "Ahead Academy",
+  applicationName: "Ahead Academy",
   description: "Ahead Academy — Attendance Management System",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
     title: "Ahead Academy",
+  },
+  icons: {
+    apple: "/icon-192.png",
   },
 };
 
@@ -49,6 +54,7 @@ export default function RootLayout({ children }) {
         <AuthProvider>
           <LoadingProvider>
             <PushNotificationManager />
+            <PwaInstallPrompt />
             <main className="min-h-screen w-full pb-24 sm:pb-28">
               {children}
             </main>
