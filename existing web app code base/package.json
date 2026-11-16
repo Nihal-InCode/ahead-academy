@@ -1,0 +1,24 @@
+{
+    "name": "ahead-academy",
+    "version": "1.0.0",
+    "description": "Ahead Academy - Attendance Management System",
+    "main": "index.cjs",
+    "type": "commonjs",
+    "scripts": {
+        "start": "node backend/server.js & node index.cjs & python3 db_manager_bot.py",
+        "api": "node backend/server.js",
+        "bot": "node index.cjs",
+        "dev": "node --watch backend/server.js"
+    },
+    "dependencies": {
+        "@simplewebauthn/server": "^13.3.2",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "jsonwebtoken": "^9.0.2",
+        "multer": "^1.4.5-lts.1",
+        "node-telegram-bot-api": "^0.66.0",
+        "web-push": "^3.6.7",
+        "xlsx": "^0.18.5"
+    }
+}

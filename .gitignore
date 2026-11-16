@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+*/node_modules/
+frontend/node_modules/
+
+# Next.js Build Output
+.next/
+*/.next/
+frontend/.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# Python
+__pycache__/
+*/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+*.venv
+venv/
+env/
+
+# Environment Variables
+.env
+.env*.local
+.env.production
+*.env
+!.env.example
+!*.env.example
+
+# Legacy & Test Databases (keep only production attendance.db)
+*.absentee-test.db
+attendance_pre_cleanup.db
+*.bak
+*.backup
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS & Editor
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.mimocode/
