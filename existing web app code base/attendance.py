@@ -229,10 +229,21 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 # === Database Path Configuration ===
 def resolve_db_path():
     configured = (os.environ.get("ATTENDANCE_DB_PATH") or "").strip()
-    if configured and os.path.exists(configured):
-        return configured
-
     file_dir_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance.db")
+
+    if configured:
+        if not os.path.exists(configured) and os.path.exists(file_dir_db):
+            try:
+                db_dir = os.path.dirname(configured)
+                if db_dir and not os.path.exists(db_dir):
+                    os.makedirs(db_dir, exist_ok=True)
+                shutil.copyfile(file_dir_db, configured)
+                sys.stderr.write(f"[DB Init] Seeded database to persistent volume at {configured}\n")
+            except Exception as e:
+                sys.stderr.write(f"[DB Init Error] Failed to seed database to {configured}: {e}\n")
+        if os.path.exists(configured):
+            return configured
+
     if os.path.exists(file_dir_db):
         return file_dir_db
 

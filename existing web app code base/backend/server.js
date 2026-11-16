@@ -56,16 +56,31 @@ const teacherPhotoUpload = multer({
 });
 function resolveAttendanceDbPath() {
     const configured = (process.env.ATTENDANCE_DB_PATH || '').trim();
-    const candidates = configured
-        ? [
-            configured,
-            path.join(__dirname, '..', 'attendance.db'),
-            '/data/web_attendance.db',
-        ]
-        : [
-            path.join(__dirname, '..', 'attendance.db'),
-            '/data/web_attendance.db',
-        ];
+    const bundled = path.join(__dirname, '..', 'attendance.db');
+
+    if (configured) {
+        if (!fsSync.existsSync(configured) && fsSync.existsSync(bundled)) {
+            try {
+                const dir = path.dirname(configured);
+                if (dir && !fsSync.existsSync(dir)) {
+                    fsSync.mkdirSync(dir, { recursive: true });
+                }
+                fsSync.copyFileSync(bundled, configured);
+                console.log(`[DB Init] Seeded database from bundled copy to persistent location: ${configured}`);
+            } catch (err) {
+                console.error(`[DB Init Error] Failed to seed database to ${configured}:`, err.message);
+            }
+        }
+        if (fsSync.existsSync(configured)) {
+            return configured;
+        }
+    }
+
+    const candidates = [
+        bundled,
+        '/data/attendance.db',
+        '/data/web_attendance.db',
+    ];
 
     for (const candidate of candidates) {
         if (fsSync.existsSync(candidate)) {
@@ -73,7 +88,7 @@ function resolveAttendanceDbPath() {
         }
     }
 
-    return configured || path.join(__dirname, '..', 'attendance.db');
+    return configured || bundled;
 }
 
 const ATTENDANCE_DB_PATH = resolveAttendanceDbPath();
