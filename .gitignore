@@ -1,11 +1,15 @@
 # Dependencies
 node_modules/
 */node_modules/
+ahead-app/node_modules/
+ahead-app/backend/node_modules/
+ahead-app/frontend/node_modules/
 frontend/node_modules/
 
 # Next.js Build Output
 .next/
 */.next/
+ahead-app/frontend/.next/
 frontend/.next/
 out/
 build/

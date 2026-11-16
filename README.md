@@ -41,15 +41,15 @@ A modern, full-stack attendance and academic management platform built for **Ahe
 
 ### 2. Backend Setup
 ```bash
-cd "existing web app code base/backend"
+cd ahead-app
 npm install
-node server.js
+npm start
 ```
 The backend server runs on `http://localhost:8080`.
 
 ### 3. Frontend Setup
 ```bash
-cd "existing web app code base/frontend"
+cd ahead-app/frontend
 npm install
 npm run dev
 ```
@@ -68,10 +68,29 @@ The frontend web application runs on `http://localhost:3000`.
 
 ---
 
+## ☁️ Deployment Configuration
+
+### Railway (Backend)
+- **Root Directory**: `ahead-app`
+- **Persistent Volume Mount**: `/data`
+- **Environment Variables**:
+  - `PORT`: `8080`
+  - `ATTENDANCE_DB_PATH`: `/data/attendance.db`
+  - `JWT_SECRET`: `<your_secret>`
+  - `WEBAUTHN_RP_NAME`: `Ahead Academy`
+
+### Vercel (Frontend)
+- **Root Directory**: `ahead-app/frontend`
+- **Framework Preset**: `Next.js`
+- **Environment Variables**:
+  - `NEXT_PUBLIC_API_URL`: `https://<your-railway-url>.up.railway.app`
+
+---
+
 ## 📦 Production Build
 
 ```bash
-cd "existing web app code base/frontend"
+cd ahead-app/frontend
 npm run build
 npm start
 ```

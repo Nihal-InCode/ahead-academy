@@ -18,6 +18,7 @@ RUN npm install --production
 
 # ── Application code (rebuilds on any code change) ──
 COPY . .
+RUN chmod +x start.sh
 
 EXPOSE 8080
 
