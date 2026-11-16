@@ -1,9 +1,20 @@
 import { playSound } from '@/lib/sound';
 
 export function getBaseUrl() {
+    // 1. User manual override (saved via Login screen settings)
+    if (typeof window !== 'undefined') {
+        const customUrl = localStorage.getItem('ahead_api_url');
+        if (customUrl && customUrl.trim()) {
+            return customUrl.trim().replace(/\/+$/, '');
+        }
+    }
+
+    // 2. Build-time environment variable
     if (process.env.NEXT_PUBLIC_API_URL) {
         return process.env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
     }
+
+    // 3. Fallbacks
     if (typeof window !== 'undefined') {
         if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
             return 'http://localhost:8080';
@@ -59,8 +70,9 @@ export async function apiRequest(endpoint, options = {}) {
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
-            const errorMsg = errorData.message || errorData.error || `Error ${response.status}: ${response.statusText}`;
-            console.error(`[API Error Response]`, { status: response.status, endpoint, errorData });
+            const targetUrl = `${baseUrl}${endpoint}`;
+            const errorMsg = errorData.message || errorData.error || `HTTP ${response.status} (${response.statusText || 'Not Found'}) from ${targetUrl}`;
+            console.error(`[API Error Response]`, { status: response.status, endpoint, targetUrl, errorData });
             const err = new Error(errorMsg);
             if (errorData.code) err.code = errorData.code; // e.g. GUEST_PORTAL_DISABLED -> custom 404 screen
             throw err;
