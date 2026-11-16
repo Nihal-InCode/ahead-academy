@@ -58,42 +58,50 @@ function resolveAttendanceDbPath() {
     const configured = (process.env.ATTENDANCE_DB_PATH || '').trim();
     const bundled = path.join(__dirname, '..', 'attendance.db');
 
-    if (configured) {
-        const exists = fsSync.existsSync(configured);
-        const isEmpty = exists && fsSync.statSync(configured).size === 0;
-
-        // Seed ONLY if target does not exist or is 0-byte corrupt
-        if ((!exists || isEmpty) && fsSync.existsSync(bundled) && fsSync.statSync(bundled).size > 0) {
+    try {
+        if (configured) {
+            let exists = false;
+            let size = 0;
             try {
-                const dir = path.dirname(configured);
-                if (dir && !fsSync.existsSync(dir)) {
-                    fsSync.mkdirSync(dir, { recursive: true });
+                if (fsSync.existsSync(configured)) {
+                    exists = true;
+                    size = fsSync.statSync(configured).size;
                 }
-                fsSync.copyFileSync(bundled, configured);
-                console.log(`[DB Init] Successfully seeded persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes)`);
-            } catch (err) {
-                console.error(`[DB Init Error] Failed to seed database to ${configured}:`, err.message);
+            } catch (_) {}
+
+            const isEmpty = exists && size === 0;
+
+            // Seed ONLY if target does not exist or is 0-byte corrupt
+            if (!exists || isEmpty) {
+                if (fsSync.existsSync(bundled) && fsSync.statSync(bundled).size > 0) {
+                    try {
+                        const dir = path.dirname(configured);
+                        if (dir && !fsSync.existsSync(dir)) {
+                            fsSync.mkdirSync(dir, { recursive: true });
+                        }
+                        fsSync.copyFileSync(bundled, configured);
+                        console.log(`[DB Init] Successfully seeded persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes)`);
+                    } catch (err) {
+                        console.error(`[DB Init Error] Failed to seed database to ${configured}:`, err.message);
+                    }
+                }
+            } else if (exists) {
+                console.log(`[DB Init] Using existing persistent database at: ${configured} (${size} bytes) - no overwrite.`);
             }
-        } else if (exists) {
-            console.log(`[DB Init] Using existing persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes) - no overwrite.`);
-        }
 
-        if (fsSync.existsSync(configured)) {
-            return configured;
+            if (fsSync.existsSync(configured) && fsSync.statSync(configured).size > 0) {
+                return configured;
+            }
         }
+    } catch (err) {
+        console.error(`[DB Init Error] Warning in resolveAttendanceDbPath:`, err.message);
     }
 
-    const candidates = [
-        bundled,
-        '/data/attendance.db',
-        '/data/web_attendance.db',
-    ];
-
-    for (const candidate of candidates) {
-        if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).size > 0) {
-            return candidate;
+    try {
+        if (fsSync.existsSync(bundled) && fsSync.statSync(bundled).size > 0) {
+            return bundled;
         }
-    }
+    } catch (_) {}
 
     return configured || bundled;
 }

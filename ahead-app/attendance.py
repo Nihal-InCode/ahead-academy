@@ -231,31 +231,35 @@ def resolve_db_path():
     configured = (os.environ.get("ATTENDANCE_DB_PATH") or "").strip()
     file_dir_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance.db")
 
-    if configured:
-        exists = os.path.exists(configured)
-        is_empty = exists and os.path.getsize(configured) == 0
+    try:
+        if configured:
+            exists = os.path.exists(configured)
+            size = os.path.getsize(configured) if exists else 0
+            is_empty = exists and size == 0
 
-        # Seed ONLY if persistent target does not exist or is 0-byte corrupt
-        if (not exists or is_empty) and os.path.exists(file_dir_db) and os.path.getsize(file_dir_db) > 0:
-            try:
-                db_dir = os.path.dirname(configured)
-                if db_dir and not os.path.exists(db_dir):
-                    os.makedirs(db_dir, exist_ok=True)
-                shutil.copyfile(file_dir_db, configured)
-                sys.stderr.write(f"[DB Init] Seeded database to persistent volume at {configured}\n")
-            except Exception as e:
-                sys.stderr.write(f"[DB Init Error] Failed to seed database to {configured}: {e}\n")
-        elif exists:
-            sys.stderr.write(f"[DB Init] Using existing persistent database at {configured} - no overwrite.\n")
+            # Seed ONLY if target does not exist or is 0-byte corrupt
+            if (not exists or is_empty) and os.path.exists(file_dir_db) and os.path.getsize(file_dir_db) > 0:
+                try:
+                    db_dir = os.path.dirname(configured)
+                    if db_dir and not os.path.exists(db_dir):
+                        os.makedirs(db_dir, exist_ok=True)
+                    shutil.copyfile(file_dir_db, configured)
+                    sys.stderr.write(f"[DB Init] Seeded database to persistent volume at {configured}\n")
+                except Exception as e:
+                    sys.stderr.write(f"[DB Init Error] Failed to seed database to {configured}: {e}\n")
+            elif exists and size > 0:
+                sys.stderr.write(f"[DB Init] Using existing persistent database at {configured} ({size} bytes) - no overwrite.\n")
 
-        if os.path.exists(configured):
-            return configured
+            if os.path.exists(configured) and os.path.getsize(configured) > 0:
+                return configured
+    except Exception as e:
+        sys.stderr.write(f"[DB Init Warning] {e}\n")
 
-    if os.path.exists(file_dir_db):
+    if os.path.exists(file_dir_db) and os.path.getsize(file_dir_db) > 0:
         return file_dir_db
 
     cwd_db = os.path.join(os.getcwd(), "attendance.db")
-    if os.path.exists(cwd_db):
+    if os.path.exists(cwd_db) and os.path.getsize(cwd_db) > 0:
         return cwd_db
 
     return configured or file_dir_db
