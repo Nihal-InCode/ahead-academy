@@ -59,18 +59,25 @@ function resolveAttendanceDbPath() {
     const bundled = path.join(__dirname, '..', 'attendance.db');
 
     if (configured) {
-        if (!fsSync.existsSync(configured) && fsSync.existsSync(bundled)) {
+        const exists = fsSync.existsSync(configured);
+        const isEmpty = exists && fsSync.statSync(configured).size === 0;
+
+        // Seed ONLY if target does not exist or is 0-byte corrupt
+        if ((!exists || isEmpty) && fsSync.existsSync(bundled) && fsSync.statSync(bundled).size > 0) {
             try {
                 const dir = path.dirname(configured);
                 if (dir && !fsSync.existsSync(dir)) {
                     fsSync.mkdirSync(dir, { recursive: true });
                 }
                 fsSync.copyFileSync(bundled, configured);
-                console.log(`[DB Init] Seeded database from bundled copy to persistent location: ${configured}`);
+                console.log(`[DB Init] Successfully seeded persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes)`);
             } catch (err) {
                 console.error(`[DB Init Error] Failed to seed database to ${configured}:`, err.message);
             }
+        } else if (exists) {
+            console.log(`[DB Init] Using existing persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes) - no overwrite.`);
         }
+
         if (fsSync.existsSync(configured)) {
             return configured;
         }
@@ -83,7 +90,7 @@ function resolveAttendanceDbPath() {
     ];
 
     for (const candidate of candidates) {
-        if (fsSync.existsSync(candidate)) {
+        if (fsSync.existsSync(candidate) && fsSync.statSync(candidate).size > 0) {
             return candidate;
         }
     }
@@ -92,6 +99,7 @@ function resolveAttendanceDbPath() {
 }
 
 const ATTENDANCE_DB_PATH = resolveAttendanceDbPath();
+process.env.ATTENDANCE_DB_PATH = ATTENDANCE_DB_PATH;
 const TEACHER_PHOTO_DIR = process.env.TEACHER_PHOTO_DIR || path.join(path.dirname(ATTENDANCE_DB_PATH), 'teachers');
 const TEACHER_PHOTO_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const WEB_ACTIVITY_RETENTION = 600;
@@ -676,7 +684,11 @@ function callPython(data) {
     });
 }
 
-// --- Health Check ---
+// --- Health Checks ---
+app.get('/', (req, res) => {
+    res.status(200).json({ status: 'ok', service: 'Ahead Academy Backend API', timestamp: new Date().toISOString() });
+});
+
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
@@ -3247,6 +3259,22 @@ app.post('/admin/push-test', authenticateToken, async (req, res) => {
 // --- Server Startup ---
 const PORT = process.env.PORT || 8080;
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT} (binding to 0.0.0.0)`);
 });
+
+// Graceful Termination Signal Handling (SIGTERM & SIGINT for Docker/Railway)
+const handleShutdown = (signal) => {
+    console.log(`[Server] Received ${signal}. Closing HTTP server gracefully...`);
+    server.close(() => {
+        console.log('[Server] HTTP server closed cleanly. Exiting.');
+        process.exit(0);
+    });
+    setTimeout(() => {
+        console.error('[Server] Forced shutdown timeout reached (10s). Exiting.');
+        process.exit(1);
+    }, 10000).unref();
+};
+
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => handleShutdown('SIGINT'));

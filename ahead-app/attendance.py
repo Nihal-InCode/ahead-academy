@@ -232,7 +232,11 @@ def resolve_db_path():
     file_dir_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), "attendance.db")
 
     if configured:
-        if not os.path.exists(configured) and os.path.exists(file_dir_db):
+        exists = os.path.exists(configured)
+        is_empty = exists and os.path.getsize(configured) == 0
+
+        # Seed ONLY if persistent target does not exist or is 0-byte corrupt
+        if (not exists or is_empty) and os.path.exists(file_dir_db) and os.path.getsize(file_dir_db) > 0:
             try:
                 db_dir = os.path.dirname(configured)
                 if db_dir and not os.path.exists(db_dir):
@@ -241,6 +245,9 @@ def resolve_db_path():
                 sys.stderr.write(f"[DB Init] Seeded database to persistent volume at {configured}\n")
             except Exception as e:
                 sys.stderr.write(f"[DB Init Error] Failed to seed database to {configured}: {e}\n")
+        elif exists:
+            sys.stderr.write(f"[DB Init] Using existing persistent database at {configured} - no overwrite.\n")
+
         if os.path.exists(configured):
             return configured
 

@@ -1,25 +1,26 @@
 FROM node:22-bookworm-slim
 
-# ── Install Python 3 (cached layer — only rebuilds when base image changes) ──
+# ── Install Python 3 & utilities ──
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
+    apt-get install -y --no-install-recommends python3 python3-pip python-is-python3 && \
     rm -rf /var/lib/apt/lists/*
-
-# ── Python dependencies (cached layer — only rebuilds when requirements change) ──
-COPY requirements.txt /tmp/requirements.txt
-RUN pip install --break-system-packages --no-cache-dir --default-timeout=120 --retries=5 -r /tmp/requirements.txt && \
-    rm /tmp/requirements.txt
 
 WORKDIR /app
 
-# ── Node dependencies (cached layer — only rebuilds when package.json changes) ──
+# ── Python dependencies ──
+COPY requirements.txt ./
+RUN pip install --break-system-packages --no-cache-dir --default-timeout=120 --retries=5 -r requirements.txt || true
+
+# ── Node dependencies ──
 COPY package.json package-lock.json* ./
 RUN npm install --production
 
-# ── Application code (rebuilds on any code change) ──
+# ── Application code & assets ──
 COPY . .
-RUN chmod +x start.sh
+
+# Convert Windows CRLF line endings to LF and make start.sh executable
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 EXPOSE 8080
 
-CMD ["npm", "start"]
+CMD ["/app/start.sh"]
