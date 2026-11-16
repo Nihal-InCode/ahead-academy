@@ -10,7 +10,7 @@ async function proxy(request, params) {
     const path = segments.join('/');
     
     // The Railway backend URL
-    const backendBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'http://localhost:8080').replace(/\/+$/, '');
+    const backendBase = (process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || 'https://ahead-academy-production.up.railway.app').replace(/\/+$/, '');
     const targetUrl = `${backendBase}/${path}${request.nextUrl.search}`;
 
     console.log(`[Proxy] ${request.method} ${request.nextUrl.pathname} -> ${targetUrl}`);

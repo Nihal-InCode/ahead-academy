@@ -3,15 +3,23 @@ import { playSound } from '@/lib/sound';
 export function getBaseUrl() {
     // 1. User manual override (saved via Login screen settings)
     if (typeof window !== 'undefined') {
-        const customUrl = localStorage.getItem('ahead_api_url');
+        let customUrl = localStorage.getItem('ahead_api_url');
         if (customUrl && customUrl.trim()) {
-            return customUrl.trim().replace(/\/+$/, '');
+            customUrl = customUrl.trim().replace(/\/+$/, '');
+            if (!customUrl.startsWith('http://') && !customUrl.startsWith('https://')) {
+                customUrl = `https://${customUrl}`;
+            }
+            return customUrl;
         }
     }
 
     // 2. Build-time environment variable
     if (process.env.NEXT_PUBLIC_API_URL) {
-        return process.env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
+        let envUrl = process.env.NEXT_PUBLIC_API_URL.trim().replace(/\/+$/, '');
+        if (!envUrl.startsWith('http://') && !envUrl.startsWith('https://')) {
+            envUrl = `https://${envUrl}`;
+        }
+        return envUrl;
     }
 
     // 3. Fallbacks
@@ -19,10 +27,10 @@ export function getBaseUrl() {
         if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
             return 'http://localhost:8080';
         }
-        // On remote hosts (Vercel) where NEXT_PUBLIC_API_URL is missing, use the Next.js proxy route
-        return '/api/proxy';
+        // Direct production fallback to the deployed Railway backend URL
+        return 'https://ahead-academy-production.up.railway.app';
     }
-    return 'http://localhost:8080';
+    return 'https://ahead-academy-production.up.railway.app';
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL;

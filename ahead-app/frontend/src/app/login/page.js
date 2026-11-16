@@ -37,20 +37,25 @@ export default function LoginPage() {
 
     useEffect(() => {
         if (typeof window !== "undefined") {
-            const saved = localStorage.getItem("ahead_api_url") || process.env.NEXT_PUBLIC_API_URL || "";
+            const saved = localStorage.getItem("ahead_api_url") || process.env.NEXT_PUBLIC_API_URL || "https://ahead-academy-production.up.railway.app";
             setCurrentServerUrl(saved);
             setServerUrlInput(saved);
         }
     }, []);
 
     const handleSaveServerUrl = async () => {
-        const cleanUrl = serverUrlInput.trim().replace(/\/+$/, '');
+        let cleanUrl = serverUrlInput.trim().replace(/\/+$/, '');
         if (!cleanUrl) {
             localStorage.removeItem("ahead_api_url");
-            setCurrentServerUrl("");
+            setCurrentServerUrl("https://ahead-academy-production.up.railway.app");
             setShowServerModal(false);
             window.location.reload();
             return;
+        }
+
+        // Auto-prepend https:// if protocol was omitted
+        if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+            cleanUrl = `https://${cleanUrl}`;
         }
 
         setServerTestStatus("testing");
@@ -539,7 +544,7 @@ export default function LoginPage() {
                             <div className="my-4 space-y-2">
                                 <input
                                     type="text"
-                                    placeholder="https://ahead-backend.up.railway.app"
+                                    placeholder="https://ahead-academy-production.up.railway.app"
                                     value={serverUrlInput}
                                     onChange={(e) => setServerUrlInput(e.target.value)}
                                     className="w-full rounded-xl border border-white/20 bg-white/10 px-3.5 py-2.5 text-xs font-mono text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-400"

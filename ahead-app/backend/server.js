@@ -714,6 +714,10 @@ app.get('/health', (req, res) => {
 });
 
 // --- Auth Routes ---
+app.get('/login', (req, res) => {
+    res.status(200).json({ status: 'ok', message: 'Ahead Academy Auth API. Submit credentials via POST /login' });
+});
+
 app.post('/login', async (req, res) => {
     try {
         const { username, password, guest_name } = req.body;
