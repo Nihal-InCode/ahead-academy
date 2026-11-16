@@ -23,4 +23,4 @@ RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 EXPOSE 8080
 
-CMD ["/app/start.sh"]
+CMD ["node", "backend/server.js"]
