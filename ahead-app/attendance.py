@@ -244,6 +244,10 @@ def resolve_db_path():
                     if db_dir and not os.path.exists(db_dir):
                         os.makedirs(db_dir, exist_ok=True)
                     shutil.copyfile(file_dir_db, configured)
+                    try:
+                        os.chmod(configured, 0o666)
+                    except Exception:
+                        pass
                     sys.stderr.write(f"[DB Init] Seeded database to persistent volume at {configured}\n")
                 except Exception as e:
                     sys.stderr.write(f"[DB Init Error] Failed to seed database to {configured}: {e}\n")

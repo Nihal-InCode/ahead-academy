@@ -80,6 +80,7 @@ function resolveAttendanceDbPath() {
                             fsSync.mkdirSync(dir, { recursive: true });
                         }
                         fsSync.copyFileSync(bundled, configured);
+                        try { fsSync.chmodSync(configured, 0o666); } catch (_) {}
                         console.log(`[DB Init] Successfully seeded persistent database at: ${configured} (${fsSync.statSync(configured).size} bytes)`);
                     } catch (err) {
                         console.error(`[DB Init Error] Failed to seed database to ${configured}:`, err.message);

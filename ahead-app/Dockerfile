@@ -18,9 +18,12 @@ RUN npm install --production
 # ── Application code & assets ──
 COPY . .
 
-# Convert Windows CRLF line endings to LF and make start.sh executable
-RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+# Convert line endings, ensure start.sh is executable and database is writable
+RUN sed -i 's/\r$//' /app/start.sh && \
+    chmod +x /app/start.sh && \
+    chmod 666 /app/attendance.db && \
+    chmod -R 777 /app
 
 EXPOSE 8080
 
-CMD ["node", "backend/server.js"]
+CMD ["/app/start.sh"]
