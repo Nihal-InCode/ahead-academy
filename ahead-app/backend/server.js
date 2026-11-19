@@ -1267,16 +1267,6 @@ app.post('/students/:id/deactivate', authenticateToken, async (req, res) => {
 });
 
 // ── Subject Management (Ahead Academy) ──
-app.get('/subjects', authenticateToken, async (req, res) => {
-    try {
-        const { classId, class: className } = req.query;
-        const result = await callPython({ action: "get_subjects", classId: classId || className });
-        res.json(result);
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
-
 app.post('/subjects', authenticateToken, async (req, res) => {
     try {
         const result = await callPython({ action: "add_subject", ...req.body });

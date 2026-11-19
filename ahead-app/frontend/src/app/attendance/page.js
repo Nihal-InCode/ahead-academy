@@ -204,14 +204,23 @@ export default function AttendancePage() {
       setSelectedSubject("");
       setStudents([]);
       setAttendance({});
-      return;
+      return [];
     }
     setSubjectsLoading(true);
     try {
       const res = await getSubjects(className);
       const list = Array.isArray(res) ? res : (res?.data || []);
-      setSubjects(list);
-      return list;
+      const seen = new Set();
+      const uniqueList = [];
+      for (const s of list) {
+        const name = (typeof s === "string" ? s : s?.name || s?.id || "").trim();
+        if (name && !seen.has(name.toLowerCase())) {
+          seen.add(name.toLowerCase());
+          uniqueList.push({ id: s?.id || name, name });
+        }
+      }
+      setSubjects(uniqueList);
+      return uniqueList;
     } catch {
       setSubjects([]);
       return [];
@@ -415,8 +424,8 @@ export default function AttendancePage() {
         )}
 
         {/* ── CLASS, SUBJECT & DATE SELECTION CARD ── */}
-        <div className="bg-white rounded-2xl p-3.5 border border-slate-200/80 shadow-xs space-y-3">
-          <div className="grid grid-cols-2 gap-2.5">
+        <div className="bg-white rounded-2xl p-3.5 sm:p-4 border border-slate-200/80 shadow-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
             {/* 1. Class Batch */}
             <div>
               <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
@@ -425,7 +434,7 @@ export default function AttendancePage() {
               <select
                 value={selectedClass}
                 onChange={(e) => handleClassChange(e.target.value)}
-                className="w-full bg-slate-100/70 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition-all"
+                className="w-full bg-slate-100/70 hover:bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition-all cursor-pointer"
               >
                 <option value="">Select Class</option>
                 {classes.map((c) => (
@@ -436,10 +445,36 @@ export default function AttendancePage() {
               </select>
             </div>
 
-            {/* Date */}
+            {/* 2. Subject Dropdown (DROPDOWN SELECTION ONLY - NO CHIPS/DUPLICATES) */}
             <div>
               <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
-                Date
+                2. Select Subject
+              </label>
+              <select
+                value={selectedSubject}
+                disabled={!selectedClass || subjectsLoading}
+                onChange={(e) => handleSubjectChange(e.target.value)}
+                className="w-full bg-slate-100/70 hover:bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
+              >
+                <option value="">
+                  {!selectedClass
+                    ? "← Select Class first"
+                    : subjectsLoading
+                    ? "Loading subjects..."
+                    : "Select Subject"}
+                </option>
+                {subjects.map((s) => (
+                  <option key={s.id || s.name} value={s.name}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 3. Attendance Date */}
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-wider text-slate-500 block mb-1">
+                3. Attendance Date
               </label>
               <input
                 type="date"
@@ -452,67 +487,9 @@ export default function AttendancePage() {
                     fetchStudents(selectedClass, selectedSubject, newDate);
                   }
                 }}
-                className="w-full bg-slate-100/70 border border-slate-200 rounded-xl px-2.5 py-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition-all"
+                className="w-full bg-slate-100/70 hover:bg-slate-100 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 transition-all cursor-pointer"
               />
             </div>
-          </div>
-
-          {/* 2. Subject Dropdown & Quick Switcher */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-[10px] font-black uppercase tracking-wider text-slate-500">
-                2. Select Subject
-              </label>
-              {selectedClass && subjects.length > 0 && (
-                <span className="text-[10px] font-bold text-teal-700">
-                  {subjects.length} subjects in {selectedClass}
-                </span>
-              )}
-            </div>
-
-            <select
-              value={selectedSubject}
-              disabled={!selectedClass || subjectsLoading}
-              onChange={(e) => handleSubjectChange(e.target.value)}
-              className="w-full bg-slate-100/70 border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-black text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              <option value="">
-                {!selectedClass
-                  ? "← Select Class first"
-                  : subjectsLoading
-                  ? "Loading subjects..."
-                  : "Select Subject"}
-              </option>
-              {subjects.map((s) => (
-                <option key={s.id || s.name} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-
-            {/* Quick-Select Subject Chips */}
-            {selectedClass && subjects.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5 pt-2">
-                {subjects.map((s) => {
-                  const isSelected = selectedSubject === s.name;
-                  return (
-                    <button
-                      key={s.id || s.name}
-                      type="button"
-                      onClick={() => handleSubjectChange(s.name)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all active:scale-95 border ${
-                        isSelected
-                          ? "bg-teal-600 text-white border-teal-600 shadow-sm shadow-teal-200"
-                          : "bg-slate-50 text-slate-700 border-slate-200 hover:border-teal-400 hover:text-teal-700 hover:bg-teal-50/50"
-                      }`}
-                    >
-                      {s.name}
-                      {isSelected && <span className="ml-1 text-[10px]">✓</span>}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
         </div>
 
@@ -530,32 +507,18 @@ export default function AttendancePage() {
             </p>
           </div>
         ) : !selectedSubject ? (
-          <div className="bg-white rounded-2xl p-8 text-center border border-slate-200/80 shadow-xs space-y-3">
+          <div className="bg-white rounded-2xl p-8 text-center border border-slate-200/80 shadow-xs space-y-2">
             <div className="w-12 h-12 bg-teal-50 text-teal-700 rounded-2xl flex items-center justify-center mx-auto">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
               </svg>
             </div>
             <h3 className="font-black text-slate-800 text-sm">
-              Select a Subject for {selectedClass}
+              Select a Subject from the Dropdown
             </h3>
             <p className="text-xs text-slate-400 max-w-xs mx-auto">
-              Not every student is enrolled in every subject. Tap a subject below to load enrolled students:
+              Please choose a subject in the dropdown above to load the student roster for {selectedClass}.
             </p>
-            {subjects.length > 0 && (
-              <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                {subjects.map((s) => (
-                  <button
-                    key={s.id || s.name}
-                    type="button"
-                    onClick={() => handleSubjectChange(s.name)}
-                    className="px-4 py-2 rounded-xl text-xs font-black bg-teal-50 text-teal-800 border border-teal-200/90 hover:bg-teal-600 hover:text-white transition-all active:scale-95 shadow-xs"
-                  >
-                    {s.name}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         ) : (
           <>

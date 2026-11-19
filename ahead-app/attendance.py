@@ -7414,15 +7414,24 @@ if __name__ == "__main__":
                             SELECT DISTINCT subject FROM attendance
                             WHERE LOWER(class)=LOWER(?) AND subject IS NOT NULL AND TRIM(subject) != ''
                         """, (str(class_id).strip(),))
-                        existing_names = set(s["name"].lower() for s in subjects)
+                        existing_names = set(str(s["name"]).lower() for s in subjects if s.get("name"))
                         for (att_sub,) in c.fetchall():
-                            if att_sub and att_sub.lower() not in existing_names:
+                            if att_sub and str(att_sub).strip().lower() not in existing_names:
                                 subjects.append({"id": att_sub, "name": att_sub})
-                                existing_names.add(att_sub.lower())
+                                existing_names.add(str(att_sub).strip().lower())
 
-                    if not subjects:
-                        subjects = [{"id": "General", "name": "General"}]
-                    result = {"success": True, "data": subjects}
+                    # Deduplicate subjects strictly by case-insensitive name
+                    seen_names = set()
+                    unique_subjects = []
+                    for s in subjects:
+                        n = str(s.get("name") or s.get("id") or "").strip()
+                        if n and n.lower() not in seen_names:
+                            seen_names.add(n.lower())
+                            unique_subjects.append({"id": s.get("id") or n, "name": n})
+
+                    if not unique_subjects:
+                        unique_subjects = [{"id": "General", "name": "General"}]
+                    result = {"success": True, "data": unique_subjects}
 
                 elif action == "mark_attendance":
                     # ── Daily Attendance (one record per student per date) ──
