@@ -1449,7 +1449,8 @@ app.get('/batch-report/:classId', authenticateToken, async (req, res) => {
             action: "get_batch_report",
             classId: req.params.classId,
             startDate: req.query.from || null,
-            endDate: req.query.to || null
+            endDate: req.query.to || null,
+            subject: req.query.subject || null
         });
         res.json(result);
     } catch (error) {
@@ -2590,7 +2591,8 @@ app.get('/admin/batch-report/:classId', authenticateToken, async (req, res) => {
             action: "get_batch_report",
             classId: req.params.classId,
             startDate: req.query.from || null,
-            endDate: req.query.to || null
+            endDate: req.query.to || null,
+            subject: req.query.subject || null
         });
         res.json(result);
     } catch (error) {

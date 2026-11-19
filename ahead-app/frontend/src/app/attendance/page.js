@@ -403,9 +403,10 @@ export default function AttendancePage() {
         showBack={true}
         onBack={() => router.push("/")}
         date={formatDisplayDate(date)}
+        maxWidth="max-w-2xl sm:max-w-3xl"
       />
 
-      <main className="max-w-md mx-auto px-3.5 py-3.5 space-y-3.5">
+      <div className="w-full max-w-2xl sm:max-w-3xl mx-auto px-3.5 sm:px-6 py-4 space-y-4">
         {error && (
           <div className="p-3.5 bg-rose-50 text-rose-700 rounded-2xl text-xs font-bold border border-rose-200 flex items-center justify-between animate-in fade-in">
             <span>{error}</span>
@@ -673,7 +674,7 @@ export default function AttendancePage() {
             )}
           </>
         )}
-      </main>
+      </div>
 
       {/* Confirmation Modal */}
       {showConfirm && (

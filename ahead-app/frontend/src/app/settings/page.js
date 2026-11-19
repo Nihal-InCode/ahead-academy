@@ -254,9 +254,10 @@ export default function SettingsPage() {
         subtitle="Admin Console"
         showBack={true}
         onBack={() => router.push("/")}
+        maxWidth="max-w-2xl sm:max-w-3xl"
       />
 
-      <main className="max-w-md mx-auto px-4 py-4 space-y-4">
+      <div className="w-full max-w-2xl sm:max-w-3xl mx-auto px-4 sm:px-6 py-4 space-y-4">
         {/* Flash Notifications */}
         {error && (
           <div className="p-3.5 bg-rose-50 text-rose-700 rounded-2xl text-xs font-bold border border-rose-200 flex items-center justify-between animate-in fade-in">
@@ -473,7 +474,7 @@ export default function SettingsPage() {
             {guestPortalEnabled ? "✓ Enabled" : "Disabled"}
           </button>
         </div>
-      </main>
+      </div>
 
       {/* ── ADD TEACHER MODAL ── */}
       {showAddModal && (

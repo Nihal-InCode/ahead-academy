@@ -142,18 +142,19 @@ export default function DashboardPage() {
   const displayOffline = todayMarked > 0 ? todayOffline : enrolledOffline;
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans pb-24">
+    <div className="min-h-screen bg-slate-50 font-sans pb-16">
       {/* ── UNIFIED APP HEADER ── */}
       <AppHeader
         title="AHEAD"
         subtitle={user?.name || "Teacher Portal"}
         date={formatDate(today)}
         showLogout={true}
+        maxWidth="max-w-2xl sm:max-w-3xl"
       />
 
-      <main className="max-w-md mx-auto px-4 py-4 space-y-4">
+      <div className="w-full max-w-2xl sm:max-w-3xl mx-auto px-4 sm:px-6 py-4 sm:py-6 space-y-4 sm:space-y-6">
         {/* ── 2x2 STATS GRID ── */}
-        <div className="grid grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4">
           <StatCard
             label="Present Today"
             value={todayPresent}
@@ -202,7 +203,7 @@ export default function DashboardPage() {
             </div>
           </div>
         </button>
-      </main>
+      </div>
     </div>
   );
 }

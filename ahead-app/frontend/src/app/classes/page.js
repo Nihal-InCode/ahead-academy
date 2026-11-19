@@ -360,6 +360,7 @@ export default function ClassesPage() {
         subtitle="Roster & Students"
         showBack={true}
         onBack={() => router.push("/")}
+        maxWidth="max-w-2xl sm:max-w-3xl"
         rightContent={
           <span className="text-[10px] font-bold text-teal-100 bg-white/10 px-2.5 py-1 rounded-full border border-white/15 backdrop-blur-sm">
             {activeClasses.length} Active
@@ -367,7 +368,7 @@ export default function ClassesPage() {
         }
       />
 
-      <main className="max-w-md mx-auto px-3.5 py-3.5 space-y-3.5">
+      <div className="w-full max-w-2xl sm:max-w-3xl mx-auto px-3.5 sm:px-6 py-4 space-y-4">
         {/* Error notification */}
         {error && (
           <div className="p-3 bg-rose-50 text-rose-700 rounded-2xl text-xs font-bold border border-rose-200 flex items-center justify-between">
@@ -589,7 +590,7 @@ export default function ClassesPage() {
             </details>
           </div>
         )}
-      </main>
+      </div>
 
       {/* ── RENAME CLASS MODAL ── */}
       {renameModal.isOpen && (

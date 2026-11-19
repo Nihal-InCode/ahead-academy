@@ -2040,12 +2040,21 @@ def get_attendance_list(c, class_, period, date):
 # ===================================================
 # 🧾 Get Individual Student Attendance History
 # ===================================================
-def get_student_stats(c, student_id, student_name, student_class, roll_no, start_date=None, end_date=None):
+def get_student_stats(c, student_id, student_name, student_class, roll_no, start_date=None, end_date=None, subject=None):
     """
-    Calculates attendance statistics for a student.
+    Calculates attendance statistics for a student across all recorded sources:
+    - attendance table (web app daily / subject sessions)
+    - period_attendance table (period-wise sessions / study leave)
+    - extra_classes table (extra sessions)
     Optional start_date / end_date (YYYY-MM-DD) limit the stats to that date range.
+    Optional subject limits stats to that specific subject.
     Returns: (total_classes, attended, percent, log)
     """
+    if str(subject or "").strip().lower() in ("", "all", "none", "null"):
+        subject = None
+    else:
+        subject = str(subject).strip()
+
     date_sql = ""
     date_params = []
     if start_date:
@@ -2055,54 +2064,88 @@ def get_student_stats(c, student_id, student_name, student_class, roll_no, start
         date_sql += " AND date <= ?"
         date_params.append(end_date)
 
-    # 1. Compute total_classes strictly using class-level attendance marks.
-    # Study-leave sessions write "power" rows per student, so sessions are
-    # weighted by the max row-count any student has for that session.
-    # For regular periods every student has exactly 1 row, so this equals the
-    # old COUNT(DISTINCT date || '-' || period).
-    c.execute("""
-        SELECT IFNULL(SUM(per_session), 0) FROM (
-            SELECT date, period, MAX(cnt) AS per_session FROM (
-                SELECT date, period, student_id, COUNT(*) AS cnt
-                FROM period_attendance WHERE class = ?
-        """ + date_sql + """
-            GROUP BY date, period, student_id
-            ) GROUP BY date, period
-        )
-    """, [student_class] + date_params)
-    count_period = c.fetchone()[0] or 0
+    subj_att_sql = ""
+    subj_att_params = []
+    subj_extra_sql = ""
+    subj_extra_params = []
+    if subject:
+        subj_att_sql = " AND (TRIM(subject) = TRIM(?) COLLATE NOCASE OR (? = 'General' AND (subject IS NULL OR subject = '')))"
+        subj_att_params = [subject, subject]
+        subj_extra_sql = " AND TRIM(subject) = TRIM(?) COLLATE NOCASE"
+        subj_extra_params = [subject]
 
-    c.execute("SELECT COUNT(*) FROM extra_classes WHERE class = ?" + date_sql, [student_class] + date_params)
+    # 1. Total class sessions conducted
+    c.execute("""
+        SELECT COUNT(DISTINCT date || '-' || IFNULL(subject, 'General')) 
+        FROM attendance 
+        WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
+    """ + date_sql + subj_att_sql, [student_class] + date_params + subj_att_params)
+    count_attendance = c.fetchone()[0] or 0
+
+    count_period = 0
+    if not subject:
+        c.execute("""
+            SELECT IFNULL(SUM(per_session), 0) FROM (
+                SELECT date, period, MAX(cnt) AS per_session FROM (
+                    SELECT date, period, student_id, COUNT(*) AS cnt
+                    FROM period_attendance WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
+            """ + date_sql + """
+                GROUP BY date, period, student_id
+                ) GROUP BY date, period
+            )
+        """, [student_class] + date_params)
+        count_period = c.fetchone()[0] or 0
+
+    c.execute("SELECT COUNT(*) FROM extra_classes WHERE TRIM(class) = TRIM(?) COLLATE NOCASE" + date_sql + subj_extra_sql, [student_class] + date_params + subj_extra_params)
     count_extra = c.fetchone()[0] or 0
 
-    total_classes = count_period + count_extra
+    class_total_sessions = count_attendance + count_period + count_extra
 
     attended = 0
     log = []
 
-    # 2. Period Attendance (Student-level for attended count and logs)
-    c.execute("SELECT date, period, status FROM period_attendance WHERE student_id=?" + date_sql, [student_id] + date_params)
-    for d, p, s in c.fetchall():
-        if s in ("P", "SL"):
+    # 2. Main attendance table marks
+    c.execute("""
+        SELECT date, status, IFNULL(subject, 'General'), period, learning_mode 
+        FROM attendance 
+        WHERE student_id = ?
+    """ + date_sql + subj_att_sql + " ORDER BY date ASC, id ASC", [student_id] + date_params + subj_att_params)
+    for d, s, subj, p, mode in c.fetchall():
+        s_norm = (s or "").strip().upper()
+        label = subj or p or "Regular"
+        if s_norm in ("P", "PRESENT", "SL", "PRESENT_ONLINE", "PRESENT_OFFLINE"):
             attended += 1
-        log.append((d, p, s))
+            log.append((d, label, "P"))
+        elif s_norm in ("S", "SICK"):
+            log.append((d, label, "S"))
+        elif s_norm in ("L", "LEAVE"):
+            log.append((d, label, "L"))
+        else:
+            log.append((d, label, "A"))
 
-    # 3. Sick / Leave records from attendance table (Logs only, treated as absent)
-    c.execute("SELECT date, period, status FROM attendance WHERE student_id=? AND status IN ('S','L')" + date_sql, [student_id] + date_params)
-    for d, p, s in c.fetchall():
-        log.append((d, p, s))
+    # 3. Period Attendance marks (only if not filtering by a subject)
+    if not subject:
+        c.execute("SELECT date, period, status FROM period_attendance WHERE student_id=?" + date_sql + " ORDER BY date ASC, id ASC", [student_id] + date_params)
+        for d, p, s in c.fetchall():
+            s_norm = (s or "").strip().upper()
+            if s_norm in ("P", "SL", "PRESENT"):
+                attended += 1
+                log.append((d, p, "P"))
+            else:
+                log.append((d, p, "A"))
 
     # 4. Extra Classes
-    c.execute("SELECT date, absent_rolls, period FROM extra_classes WHERE class=?" + date_sql, [student_class] + date_params)
-    for d, absent_str, p in c.fetchall():
-        absent_list = [x.strip() for x in absent_str.split(",")] if absent_str else []
+    c.execute("SELECT date, absent_rolls, period, subject FROM extra_classes WHERE TRIM(class) = TRIM(?) COLLATE NOCASE" + date_sql + subj_extra_sql + " ORDER BY date ASC, id ASC", [student_class] + date_params + subj_extra_params)
+    for d, absent_str, p, extra_subj in c.fetchall():
+        absent_list = [x.strip() for x in (absent_str or "").split(",") if x.strip()]
+        tag = f"{extra_subj} (Extra)" if extra_subj else f"{p} (Extra)"
         if str(roll_no) in absent_list:
-            status = "A"
+            log.append((d, tag, "A"))
         else:
-            status = "P"
             attended += 1
-        log.append((d, f"{p} (Extra)", status))
+            log.append((d, tag, "P"))
 
+    total_classes = max(class_total_sessions, len(log))
     percent = round((attended / total_classes) * 100, 2) if total_classes else 0
     return total_classes, attended, percent, log
 
@@ -6576,16 +6619,30 @@ if __name__ == "__main__":
                     result = {"success": True, "data": class_averages}
 
                 elif action == "get_batch_report":
-                    class_id = data.get("classId")
+                    class_id = data.get("classId") or data.get("class")
                     start_date = data.get("startDate") or None
                     end_date = data.get("endDate") or None
-                    c.execute("SELECT id, roll_no, name FROM students WHERE class=? ORDER BY roll_no", (class_id,))
+                    subject = data.get("subject") or None
+                    if str(subject or "").strip().lower() in ("", "all", "none", "null"):
+                        subject = None
+                    else:
+                        subject = str(subject).strip()
+
+                    c.execute("""
+                        SELECT id, roll_no, name 
+                        FROM students 
+                        WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND (is_active IS NULL OR is_active != 0)
+                        ORDER BY roll_no
+                    """, (class_id,))
                     students = c.fetchall()
                     
                     batch_data = []
+                    total_presents_sum = 0
+                    total_classes_sum = 0
                     for sid, roll, name in students:
-                        total, attended, percent, _ = get_student_stats(c, sid, name, class_id, roll, start_date, end_date)
+                        total, attended, percent, _ = get_student_stats(c, sid, name, class_id, roll, start_date, end_date, subject)
                         batch_data.append({
+                            "id": sid,
                             "rollNo": roll,
                             "name": name,
                             "total": total,
@@ -6593,21 +6650,60 @@ if __name__ == "__main__":
                             "absent": total - attended,
                             "percent": percent
                         })
-                    c.execute("""
-                        SELECT MIN(d), MAX(d) FROM (
-                            SELECT date AS d FROM period_attendance WHERE class = ?
-                            UNION ALL
-                            SELECT date AS d FROM extra_classes WHERE class = ?
-                        )
-                    """, (class_id, class_id))
+                        total_presents_sum += attended
+                        total_classes_sum += total
+                    
+                    def _roll_sort(item):
+                        r = item.get("rollNo") or ""
+                        nums = re.findall(r'\d+', str(r))
+                        return [int(n) for n in nums] if nums else [9999, str(r)]
+                    
+                    batch_data.sort(key=_roll_sort)
+                    
+                    if subject:
+                        c.execute("""
+                            SELECT MIN(d), MAX(d) FROM (
+                                SELECT date AS d FROM attendance WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND (TRIM(subject) = TRIM(?) COLLATE NOCASE OR (? = 'General' AND (subject IS NULL OR subject = '')))
+                                UNION ALL
+                                SELECT date AS d FROM extra_classes WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND TRIM(subject) = TRIM(?) COLLATE NOCASE
+                            )
+                        """, (class_id, subject, subject, class_id, subject))
+                    else:
+                        c.execute("""
+                            SELECT MIN(d), MAX(d) FROM (
+                                SELECT date AS d FROM attendance WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
+                                UNION ALL
+                                SELECT date AS d FROM period_attendance WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
+                                UNION ALL
+                                SELECT date AS d FROM extra_classes WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
+                            )
+                        """, (class_id, class_id, class_id))
                     span = c.fetchone()
-                    data_from, data_to = span[0], span[1]
+                    data_from = span[0] if span else None
+                    data_to = span[1] if span else None
                     if not data_from:
-                        c.execute("SELECT MIN(date), MAX(date) FROM period_attendance")
+                        if subject:
+                            c.execute("SELECT MIN(date), MAX(date) FROM attendance WHERE (TRIM(subject) = TRIM(?) COLLATE NOCASE OR (? = 'General' AND (subject IS NULL OR subject = '')))", (subject, subject))
+                        else:
+                            c.execute("SELECT MIN(date), MAX(date) FROM attendance")
                         fallback = c.fetchone()
-                        data_from, data_to = fallback[0], fallback[1]
+                        data_from = fallback[0] if fallback else None
+                        data_to = fallback[1] if fallback else None
 
-                    result = {"success": True, "data": {"students": batch_data, "from": data_from, "to": data_to}}
+                    class_avg = round((total_presents_sum / total_classes_sum) * 100, 1) if total_classes_sum > 0 else 0
+
+                    result = {
+                        "success": True, 
+                        "data": {
+                            "class": class_id,
+                            "subject": subject or "All Subjects",
+                            "students": batch_data, 
+                            "from": data_from, 
+                            "to": data_to,
+                            "totalStudents": len(batch_data),
+                            "classAverage": class_avg
+                        }
+                    }
 
                 elif action == "get_weekly_report":
                     end_date = get_ist_now()
@@ -7287,6 +7383,7 @@ if __name__ == "__main__":
 
                 elif action == "get_subjects":
                     class_id = data.get("classId") or data.get("class")
+                    subjects = []
                     if class_id:
                         c.execute("""
                             SELECT DISTINCT sub.id, sub.name 
@@ -7297,8 +7394,6 @@ if __name__ == "__main__":
                             ORDER BY sub.name
                         """, (str(class_id).strip(),))
                         subjects = [{"id": r[0], "name": r[1]} for r in c.fetchall()]
-                    else:
-                        subjects = []
 
                     if not subjects:
                         # Dynamic subject list from the subjects table.
@@ -7312,6 +7407,19 @@ if __name__ == "__main__":
                             ORDER BY subject
                         """)
                         subjects = [{"id": r[0], "name": r[0]} for r in c.fetchall()]
+
+                    # Also merge any distinct subjects recorded in attendance for this class
+                    if class_id:
+                        c.execute("""
+                            SELECT DISTINCT subject FROM attendance
+                            WHERE LOWER(class)=LOWER(?) AND subject IS NOT NULL AND TRIM(subject) != ''
+                        """, (str(class_id).strip(),))
+                        existing_names = set(s["name"].lower() for s in subjects)
+                        for (att_sub,) in c.fetchall():
+                            if att_sub and att_sub.lower() not in existing_names:
+                                subjects.append({"id": att_sub, "name": att_sub})
+                                existing_names.add(att_sub.lower())
+
                     if not subjects:
                         subjects = [{"id": "General", "name": "General"}]
                     result = {"success": True, "data": subjects}

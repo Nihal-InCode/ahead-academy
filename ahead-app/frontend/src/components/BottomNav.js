@@ -77,7 +77,7 @@ export default function BottomNav() {
         minHeight: "var(--bottom-nav-height, 80px)",
       }}
     >
-      <div className="mx-auto flex max-w-md items-center justify-around px-2 pt-2 pb-1">
+      <div className="mx-auto flex max-w-md sm:max-w-xl md:max-w-2xl items-center justify-around px-2 pt-2 pb-1">
         {tabs.map(({ id, path, label, icon }) => {
           const selected = pathname === path;
           return (

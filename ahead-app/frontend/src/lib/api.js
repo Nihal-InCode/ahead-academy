@@ -289,12 +289,13 @@ export const getDailyReport = async (date) => {
     return [];
 };
 
-export const getBatchReport = (classId, range = null) => {
+export const getBatchReport = (classId, range = null, subject = null) => {
     const params = new URLSearchParams();
     if (range?.from) params.set('from', range.from);
     if (range?.to) params.set('to', range.to);
+    if (subject && subject !== 'All' && subject !== 'all') params.set('subject', subject);
     const query = params.toString();
-    return apiRequest(`/batch-report/${classId}${query ? `?${query}` : ''}`);
+    return apiRequest(`/batch-report/${encodeURIComponent(classId)}${query ? `?${query}` : ''}`);
 };
 
 export const getClassAverages = () => apiRequest('/class-averages');
