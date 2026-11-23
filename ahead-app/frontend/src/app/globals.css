@@ -658,7 +658,16 @@ button {
   transform: rotate(-45deg);
 }
 
+.hamburger[aria-expanded="true"] svg {
+  transform: rotate(-45deg);
+}
+
 .hamburger input:checked + svg .line-top-bottom {
+  stroke-dasharray: 20 300;
+  stroke-dashoffset: -32.42;
+}
+
+.hamburger[aria-expanded="true"] svg .line-top-bottom {
   stroke-dasharray: 20 300;
   stroke-dashoffset: -32.42;
 }

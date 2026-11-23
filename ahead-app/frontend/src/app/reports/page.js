@@ -521,60 +521,59 @@ export default function ReportsPage() {
 
         {!activeReportTab && (
           <section className="space-y-4 animate-in fade-in duration-200">
-            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs sm:p-5">
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 text-center shadow-xs sm:p-5">
               <h2 className="text-base font-black text-slate-900">Reports</h2>
               <p className="mt-1 text-xs text-slate-500">Choose a report to view.</p>
             </div>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3">
               {[
                 {
                   id: "daily",
                   title: "Overview",
-                  description: "Daily attendance across classes and subjects.",
                   icon: (
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                   ),
                   tone: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+                  cardTone: "border-emerald-100 bg-gradient-to-br from-emerald-50/80 to-white hover:border-emerald-200",
                 },
                 {
                   id: "register",
                   title: "Register",
-                  description: "Attendance totals by class, subject, and date range.",
                   icon: (
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
                     </svg>
                   ),
                   tone: "bg-blue-50 text-blue-700 ring-blue-100",
+                  cardTone: "border-blue-100 bg-gradient-to-br from-blue-50/80 to-white hover:border-blue-200",
                 },
                 {
                   id: "student",
                   title: "Student History",
-                  description: "Find a student and review their attendance record.",
                   icon: (
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                     </svg>
                   ),
                   tone: "bg-violet-50 text-violet-700 ring-violet-100",
+                  cardTone: "border-violet-100 bg-gradient-to-br from-violet-50/80 to-white hover:border-violet-200",
                 },
               ].map((report) => (
                 <button
                   key={report.id}
                   type="button"
                   onClick={() => setActiveReportTab(report.id)}
-                  className="group flex min-h-32 items-start gap-3 rounded-2xl border border-slate-200/90 bg-white p-4 text-left shadow-xs transition-all hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:min-h-44 sm:flex-col sm:justify-between sm:p-5"
+                  className={`group flex min-h-24 items-center gap-2.5 rounded-2xl border p-3 text-left shadow-xs transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:min-h-28 sm:gap-3 sm:p-4 ${report.cardTone}`}
                 >
-                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ring-1 ${report.tone}`}>
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 sm:h-10 sm:w-10 ${report.tone}`}>
                     {report.icon}
                   </span>
-                  <span className="min-w-0 flex-1 sm:flex-none">
-                    <span className="block text-sm font-black text-slate-900">{report.title}</span>
-                    <span className="mt-1 block text-xs leading-relaxed text-slate-500">{report.description}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-black leading-tight text-slate-900 sm:text-sm">{report.title}</span>
                   </span>
-                  <span className="mt-1 self-center text-slate-300 transition-colors group-hover:text-slate-600 sm:self-end" aria-hidden="true">→</span>
+                  <span className="shrink-0 text-sm text-slate-300 transition-colors group-hover:text-slate-600" aria-hidden="true">→</span>
                 </button>
               ))}
             </div>
