@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -7,6 +7,8 @@ import {
   getSubjects,
   getStudents,
   getDailyReport,
+  getDailyAttendanceDetails,
+  updateDailyAttendance,
   getBatchReport,
   getStudentHistory,
 } from "@/lib/api";
@@ -51,7 +53,7 @@ export default function ReportsPage() {
   const { showLoader, hideLoader } = useLoading();
 
   // Active view: "daily" | "register" | "student"
-  const [activeReportTab, setActiveReportTab] = useState("daily");
+  const [activeReportTab, setActiveReportTab] = useState("");
 
   // Common data
   const [classes, setClasses] = useState([]);
@@ -63,6 +65,14 @@ export default function ReportsPage() {
   const [selectedDailyDate, setSelectedDailyDate] = useState(getIstDateString());
   const [dailyData, setDailyData] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(false);
+  const [expandedDailyClass, setExpandedDailyClass] = useState("");
+  const [selectedDailySession, setSelectedDailySession] = useState(null);
+  const [loadingDailySession, setLoadingDailySession] = useState(false);
+  const [loadingDailySessionKey, setLoadingDailySessionKey] = useState("");
+  const [savingDailySession, setSavingDailySession] = useState(false);
+  const [dailySaveMessage, setDailySaveMessage] = useState("");
+  const [copyingAbsenteesFor, setCopyingAbsenteesFor] = useState("");
+  const [copiedAbsenteesFor, setCopiedAbsenteesFor] = useState("");
 
   // 2. Class Batch Register state
   const [selectedBatchClass, setSelectedBatchClass] = useState("");
@@ -78,6 +88,7 @@ export default function ReportsPage() {
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [studentHistoryData, setStudentHistoryData] = useState(null);
   const [loadingStudent, setLoadingStudent] = useState(false);
+  const studentHistoryRequestRef = useRef(0);
 
   // Initial Load: classes & students list
   const loadInitialData = useCallback(async () => {
@@ -109,6 +120,15 @@ export default function ReportsPage() {
     loadInitialData();
   }, [loadInitialData]);
 
+  useEffect(() => {
+    const showReportsHome = () => {
+      setActiveReportTab("");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    window.addEventListener("ahead:reports-home", showReportsHome);
+    return () => window.removeEventListener("ahead:reports-home", showReportsHome);
+  }, []);
+
   // Load Daily Report
   const fetchDailyData = useCallback(async (date) => {
     if (!date) return;
@@ -124,6 +144,134 @@ export default function ReportsPage() {
       setLoadingDaily(false);
     }
   }, []);
+
+  const toggleDailyClass = (className) => {
+    setExpandedDailyClass((current) => current === className ? "" : className);
+    setSelectedDailySession(null);
+    setDailySaveMessage("");
+  };
+
+  const openDailySession = async (className, subject) => {
+    if (selectedDailySession?.className === className && selectedDailySession?.subject === subject) {
+      setSelectedDailySession(null);
+      setDailySaveMessage("");
+      return;
+    }
+    const sessionKey = `${className}::${subject}`;
+    setLoadingDailySession(true);
+    setLoadingDailySessionKey(sessionKey);
+    setSelectedDailySession(null);
+    setError("");
+    setDailySaveMessage("");
+    try {
+      const res = await getDailyAttendanceDetails(className, subject, selectedDailyDate);
+      const records = Array.isArray(res) ? res : res?.data || [];
+      setSelectedDailySession({
+        className,
+        subject,
+        records: records.map((record) => ({
+          ...record,
+          status: record.status === "P"
+            ? record.learningMode === "Online" ? "present_online" : "present_offline"
+            : "absent",
+        })),
+      });
+    } catch (err) {
+      setError(err.message || `Failed to load ${subject} attendance.`);
+    } finally {
+      setLoadingDailySession(false);
+      setLoadingDailySessionKey("");
+    }
+  };
+
+  const setDailyStudentStatus = (studentId, status) => {
+    setSelectedDailySession((current) => current ? ({
+      ...current,
+      records: current.records.map((record) =>
+        record.studentId === studentId ? { ...record, status } : record
+      ),
+    }) : current);
+  };
+
+  const handleSaveDailySession = async () => {
+    if (!selectedDailySession || selectedDailySession.records.length === 0) return;
+    setSavingDailySession(true);
+    setError("");
+    setDailySaveMessage("");
+    try {
+      await updateDailyAttendance(
+        selectedDailySession.className,
+        selectedDailySession.subject,
+        selectedDailyDate,
+        selectedDailySession.records
+      );
+      setDailySaveMessage("Attendance changes saved.");
+      setSelectedDailySession(null);
+      await fetchDailyData(selectedDailyDate);
+    } catch (err) {
+      setError(err.message || "Failed to update attendance.");
+    } finally {
+      setSavingDailySession(false);
+    }
+  };
+
+  const handleCopyAbsentees = async (className, subjectSummaries) => {
+    if (!subjectSummaries?.length) return;
+    setCopyingAbsenteesFor(className);
+    setCopiedAbsenteesFor("");
+    setError("");
+    try {
+      const subjectResults = await Promise.all(subjectSummaries.map(async (subject) => {
+        const response = await getDailyAttendanceDetails(className, subject.name, selectedDailyDate);
+        const records = Array.isArray(response) ? response : response?.data || [];
+        return {
+          name: subject.name,
+          absentees: records.filter((record) => record.status !== "P"),
+        };
+      }));
+      const message = [
+        `*${className} — Absentees*`,
+        `*${formatDisplayDate(selectedDailyDate)}*`,
+        ...subjectResults.map(({ name, absentees }) => [
+          `*${name}*`,
+          absentees.length
+            ? absentees.map((student) => `• ${student.name}${student.rollNo ? ` (${student.rollNo})` : ""}`).join("\n")
+            : "_No absentees_",
+        ].join("\n")),
+      ].join("\n\n");
+
+      let copied = false;
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(message);
+          copied = true;
+        } catch {
+          // Some phones block clipboard access on a local network address.
+        }
+      }
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        textarea.value = message;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, message.length);
+        copied = document.execCommand("copy");
+        textarea.remove();
+        if (!copied) throw new Error("Clipboard access is unavailable in this browser.");
+      }
+
+      setCopiedAbsenteesFor(className);
+      window.setTimeout(() => setCopiedAbsenteesFor((current) => current === className ? "" : current), 2000);
+    } catch (err) {
+      setError(err.message || "Could not copy the absent student list.");
+    } finally {
+      setCopyingAbsenteesFor("");
+    }
+  };
 
   useEffect(() => {
     if (activeReportTab === "daily") {
@@ -179,17 +327,25 @@ export default function ReportsPage() {
 
   // Search & Load Student History
   const handleSelectStudent = async (student) => {
+    const requestId = studentHistoryRequestRef.current + 1;
+    studentHistoryRequestRef.current = requestId;
     setSelectedStudent(student);
     setSearchQuery(`${student.rollNo} - ${student.name}`);
     setLoadingStudent(true);
     setError("");
     try {
       const res = await getStudentHistory(student.rollNo);
-      setStudentHistoryData(res?.data || res || null);
+      if (studentHistoryRequestRef.current === requestId) {
+        setStudentHistoryData(res?.data || res || null);
+      }
     } catch (err) {
-      setError("Failed to load records for " + student.name);
+      if (studentHistoryRequestRef.current === requestId) {
+        setError("Failed to load records for " + student.name);
+      }
     } finally {
-      setLoadingStudent(false);
+      if (studentHistoryRequestRef.current === requestId) {
+        setLoadingStudent(false);
+      }
     }
   };
 
@@ -212,14 +368,6 @@ export default function ReportsPage() {
       "Present Classes": s.attended || 0,
       "Absent Classes": s.absent || 0,
       "Attendance %": `${s.percent || 0}%`,
-      Status:
-        Number(s.total || 0) === 0
-          ? "No Data"
-          : Number(s.percent || 0) >= 75
-          ? "Regular"
-          : Number(s.percent || 0) >= 60
-          ? "Warning"
-          : "Shortage",
     }));
 
     const worksheet = XLSX.utils.json_to_sheet(rows);
@@ -267,14 +415,10 @@ export default function ReportsPage() {
   // Batch stats summary calculations
   const batchStatsSummary = useMemo(() => {
     if (!batchData?.students?.length) {
-      return { regularCount: 0, regularPct: 0, held: 0 };
+      return { held: 0 };
     }
-    const regular = batchData.students.filter(
-      (s) => Number(s.total) > 0 && Number(s.percent) >= 75
-    ).length;
-    const pct = Math.round((regular / batchData.students.length) * 100);
-    const held = batchData.students[0]?.total || 0;
-    return { regularCount: regular, regularPct: pct, held };
+    const held = batchData.heldSessions ?? batchData.students[0]?.total ?? 0;
+    return { held };
   }, [batchData]);
 
   // Compute Daily Aggregates
@@ -316,16 +460,30 @@ export default function ReportsPage() {
     <div className="min-h-screen bg-slate-50 font-sans pb-16">
       {/* ── UNIFIED ENTERPRISE APP HEADER ── */}
       <AppHeader
-        title="Reports"
+        title={
+          activeReportTab === "daily"
+            ? "Overview"
+            : activeReportTab === "register"
+              ? "Register"
+              : activeReportTab === "student"
+                ? "Student History"
+                : "Reports"
+        }
         subtitle={
-          isGuest
+          activeReportTab === "daily"
+            ? "Daily attendance"
+            : activeReportTab === "register"
+              ? "Class attendance register"
+              : activeReportTab === "student"
+                ? "Student attendance records"
+                : isGuest
             ? user?.guest_name
               ? `Guest: ${user.guest_name}`
               : "Student Portal"
             : "Registers & Analytics"
         }
-        showBack={!isGuest}
-        onBack={() => router.push("/")}
+        showBack={Boolean(activeReportTab) || !isGuest}
+        onBack={() => activeReportTab ? setActiveReportTab("") : router.push("/")}
         showLogout={true}
         date={formatDisplayDate(getIstDateString())}
         maxWidth="max-w-4xl sm:max-w-5xl"
@@ -361,91 +519,67 @@ export default function ReportsPage() {
           </div>
         )}
 
-        {/* ── PROFESSIONAL SEGMENTED NAVIGATION TABS ── */}
-        <div className="bg-white rounded-2xl p-1.5 border border-slate-200/90 shadow-sm grid grid-cols-3 gap-1">
-          {[
-            {
-              id: "daily",
-              label: "Daily Overview",
-              shortLabel: "Daily",
-              icon: (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
+        {!activeReportTab && (
+          <section className="space-y-4 animate-in fade-in duration-200">
+            <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs sm:p-5">
+              <h2 className="text-base font-black text-slate-900">Reports</h2>
+              <p className="mt-1 text-xs text-slate-500">Choose a report to view.</p>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {[
+                {
+                  id: "daily",
+                  title: "Overview",
+                  description: "Daily attendance across classes and subjects.",
+                  icon: (
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                  ),
+                  tone: "bg-emerald-50 text-emerald-700 ring-emerald-100",
+                },
+                {
+                  id: "register",
+                  title: "Register",
+                  description: "Attendance totals by class, subject, and date range.",
+                  icon: (
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                    </svg>
+                  ),
+                  tone: "bg-blue-50 text-blue-700 ring-blue-100",
+                },
+                {
+                  id: "student",
+                  title: "Student History",
+                  description: "Find a student and review their attendance record.",
+                  icon: (
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    </svg>
+                  ),
+                  tone: "bg-violet-50 text-violet-700 ring-violet-100",
+                },
+              ].map((report) => (
+                <button
+                  key={report.id}
+                  type="button"
+                  onClick={() => setActiveReportTab(report.id)}
+                  className="group flex min-h-32 items-start gap-3 rounded-2xl border border-slate-200/90 bg-white p-4 text-left shadow-xs transition-all hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 sm:min-h-44 sm:flex-col sm:justify-between sm:p-5"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                  />
-                </svg>
-              ),
-            },
-            {
-              id: "register",
-              label: "Class Register",
-              shortLabel: "Register",
-              icon: (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"
-                  />
-                </svg>
-              ),
-            },
-            {
-              id: "student",
-              label: "Student History",
-              shortLabel: "Student",
-              icon: (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  className="h-4 w-4"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                  />
-                </svg>
-              ),
-            },
-          ].map((tab) => {
-            const active = activeReportTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveReportTab(tab.id)}
-                className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-black transition-all text-center ${
-                  active
-                    ? "bg-slate-900 text-white shadow-sm"
-                    : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/80"
-                }`}
-              >
-                {tab.icon}
-                <span className="hidden sm:inline">{tab.label}</span>
-                <span className="inline sm:hidden">{tab.shortLabel}</span>
-              </button>
-            );
-          })}
-        </div>
+                  <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ring-1 ${report.tone}`}>
+                    {report.icon}
+                  </span>
+                  <span className="min-w-0 flex-1 sm:flex-none">
+                    <span className="block text-sm font-black text-slate-900">{report.title}</span>
+                    <span className="mt-1 block text-xs leading-relaxed text-slate-500">{report.description}</span>
+                  </span>
+                  <span className="mt-1 self-center text-slate-300 transition-colors group-hover:text-slate-600 sm:self-end" aria-hidden="true">→</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* ─────────────────────────────────────────────────────────────
             1. DAILY OVERVIEW TAB
@@ -470,7 +604,12 @@ export default function ReportsPage() {
                   type="date"
                   value={selectedDailyDate}
                   max={getIstDateString()}
-                  onChange={(e) => setSelectedDailyDate(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedDailyDate(e.target.value);
+                    setExpandedDailyClass("");
+                    setSelectedDailySession(null);
+                    setDailySaveMessage("");
+                  }}
                   className="bg-slate-100 hover:bg-slate-100/80 border border-slate-300/80 rounded-xl px-3 py-1.5 text-xs font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
                 />
               </div>
@@ -516,6 +655,8 @@ export default function ReportsPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
               {classes.map((cls) => {
                 const entry = dailyData.find((d) => d.class === cls.name);
+                const subjectSummaries = entry?.subjects || [];
+                const isClassExpanded = expandedDailyClass === cls.name;
                 const classStudents = allStudents.filter(
                   (s) => s.class === cls.name && s.isActive
                 );
@@ -524,8 +665,8 @@ export default function ReportsPage() {
                 const present = entry ? entry.present : 0;
                 const absent = marked > present ? marked - present : 0;
                 const pct =
-                  enrolledCount > 0
-                    ? Math.round((present / enrolledCount) * 100)
+                  marked > 0
+                    ? Math.round((present / marked) * 100)
                     : 0;
                 const isMarked = marked > 0;
 
@@ -565,46 +706,167 @@ export default function ReportsPage() {
                       <div className="flex items-center gap-2.5">
                         <span className="text-emerald-700 flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                          {present} Present
+                          {present} P
                         </span>
                         <span className="text-slate-300">•</span>
                         <span className="text-rose-600 flex items-center gap-1">
                           <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                          {absent} Absent
+                          {absent} A
                         </span>
-                        {enrolledCount - marked > 0 && isMarked && (
-                          <>
-                            <span className="text-slate-300">•</span>
-                            <span className="text-slate-400">
-                              {enrolledCount - marked} Unmarked
-                            </span>
-                          </>
-                        )}
                       </div>
-                      <span className="text-[11px] text-slate-400 font-semibold">
-                        {marked}/{enrolledCount} Recorded
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {isMarked && (
+                          <button
+                            type="button"
+                            onClick={() => handleCopyAbsentees(cls.name, subjectSummaries)}
+                            disabled={copyingAbsenteesFor === cls.name}
+                            aria-label={`Copy absent students for ${cls.name}`}
+                            title="Copy absentees for WhatsApp"
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[10px] font-bold text-slate-600 shadow-xs transition-colors hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-50"
+                          >
+                            {copiedAbsenteesFor === cls.name ? (
+                              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" d="M16.704 5.29a1 1 0 010 1.415l-7.01 7.01a1 1 0 01-1.414 0l-3.01-3.01a1 1 0 011.414-1.414l2.303 2.302 6.303-6.303a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
+                            ) : (
+                              <svg className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="7" y="6" width="9" height="11" rx="1.5" /><path d="M13 6V4.5A1.5 1.5 0 0011.5 3h-7A1.5 1.5 0 003 4.5v9A1.5 1.5 0 004.5 15H7" /></svg>
+                            )}
+                            <span>{copyingAbsenteesFor === cls.name ? "…" : copiedAbsenteesFor === cls.name ? "Copied" : "Copy"}</span>
+                          </button>
+                        )}
+                        <span className="text-[11px] font-semibold text-slate-400">{marked} Recorded</span>
+                      </div>
                     </div>
 
-                    {/* Bottom Row: Visual Progress Fill Bar */}
-                    <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden flex">
+                    {/* Daily attendance split */}
+                    <div
+                      role="img"
+                      aria-label={`${present} present and ${absent} absent`}
+                      className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100 ring-1 ring-inset ring-slate-200/80"
+                    >
                       {isMarked && (
-                        <>
-                          <div
-                            style={{ width: `${pct}%` }}
-                            className="bg-emerald-500 h-full transition-all duration-300"
-                          />
-                          {absent > 0 && (
+                        <div className="flex h-full w-full gap-0.5">
+                          {present > 0 && (
                             <div
-                              style={{
-                                width: `${(absent / enrolledCount) * 100}%`,
-                              }}
-                              className="bg-rose-400 h-full transition-all duration-300"
+                              style={{ width: `${(present / marked) * 100}%` }}
+                              className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-400 transition-[width] duration-500 ease-out"
                             />
                           )}
-                        </>
+                          {absent > 0 && (
+                            <div
+                              style={{ width: `${(absent / marked) * 100}%` }}
+                              className="h-full rounded-full bg-gradient-to-r from-rose-400 to-rose-300 transition-[width] duration-500 ease-out"
+                            />
+                          )}
+                        </div>
                       )}
                     </div>
+
+                    {subjectSummaries.length > 0 && (
+                      <div className="border-t border-slate-100 pt-2.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleDailyClass(cls.name)}
+                          aria-expanded={isClassExpanded}
+                          className="flex w-full items-center justify-between gap-2 text-left"
+                        >
+                          <span className="text-xs font-bold text-slate-700">
+                            {isClassExpanded ? "Hide" : "View"} subjects marked ({subjectSummaries.length})
+                          </span>
+                          <svg className={`h-4 w-4 text-slate-400 transition-transform ${isClassExpanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" />
+                          </svg>
+                        </button>
+
+                        {isClassExpanded && (
+                          <div className="mt-2.5 space-y-2">
+                            {subjectSummaries.map((subjectSummary) => {
+                              const isSelected = selectedDailySession?.className === cls.name && selectedDailySession?.subject === subjectSummary.name;
+                              const presentCount = subjectSummary.present || 0;
+                              const absentCount = subjectSummary.absent || 0;
+                              return (
+                                <div key={subjectSummary.name} className="rounded-xl border border-slate-200 bg-slate-50/70 p-2.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => openDailySession(cls.name, subjectSummary.name)}
+                                    className="flex w-full items-center justify-between gap-3 text-left"
+                                  >
+                                    <span className="min-w-0">
+                                      <span className="block truncate text-xs font-bold text-slate-800">{subjectSummary.name}</span>
+                                      <span className="mt-0.5 block text-[10px] font-medium text-slate-500">
+                                        {presentCount} present · {absentCount} absent · {subjectSummary.marked} recorded
+                                      </span>
+                                    </span>
+                                    <span className="shrink-0 rounded-lg border border-blue-100 bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-700">
+                                      {loadingDailySessionKey === `${cls.name}::${subjectSummary.name}` ? "Loading…" : isSelected ? "Close" : isGuest ? "View" : "Edit"}
+                                    </span>
+                                  </button>
+
+                                  {isSelected && (
+                                    <div className="mt-3 space-y-2 border-t border-slate-200 pt-2.5">
+                                      {selectedDailySession.records.length === 0 ? (
+                                        <p className="text-xs text-slate-500">No attendance records found for this subject.</p>
+                                      ) : (
+                                        selectedDailySession.records.map((record) => (
+                                          <div key={record.studentId} className="flex flex-col gap-2 rounded-lg bg-white px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
+                                            <span className="min-w-0 truncate text-xs font-semibold text-slate-800">
+                                              <span className="mr-2 font-mono text-[10px] text-slate-500">{record.rollNo}</span>
+                                              {record.name}
+                                            </span>
+                                            {isGuest ? (
+                                              <span className="shrink-0 text-[10px] font-semibold text-slate-600">
+                                                {{
+                                                  present_online: "Present · Online",
+                                                  present_offline: "Present · Offline",
+                                                  absent: "Absent",
+                                                }[record.status] || "Absent"}
+                                              </span>
+                                            ) : (
+                                              <div role="group" aria-label={`Attendance for ${record.name}`} className="grid shrink-0 grid-cols-3 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                                                {[
+                                                  { value: "present_online", label: "Online", active: "bg-blue-600 text-white shadow-sm" },
+                                                  { value: "present_offline", label: "Offline", active: "bg-emerald-600 text-white shadow-sm" },
+                                                  { value: "absent", label: "Absent", active: "bg-rose-600 text-white shadow-sm" },
+                                                ].map((option) => (
+                                                  <button
+                                                    key={option.value}
+                                                    type="button"
+                                                    aria-pressed={record.status === option.value}
+                                                    onClick={() => setDailyStudentStatus(record.studentId, option.value)}
+                                                    className={`rounded-md px-2.5 py-1.5 text-[10px] font-semibold transition-colors ${
+                                                      record.status === option.value
+                                                        ? option.active
+                                                        : "text-slate-500 hover:bg-white hover:text-slate-700"
+                                                    }`}
+                                                  >
+                                                    {option.label}
+                                                  </button>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </div>
+                                        ))
+                                      )}
+                                      {!isGuest && selectedDailySession.records.length > 0 && (
+                                        <div className="flex items-center justify-between gap-2 pt-1">
+                                          <span className="text-[11px] font-semibold text-emerald-700">{dailySaveMessage}</span>
+                                          <button
+                                            type="button"
+                                            onClick={handleSaveDailySession}
+                                            disabled={savingDailySession}
+                                            className="rounded-lg bg-teal-600 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-teal-700 disabled:opacity-50"
+                                          >
+                                            {savingDailySession ? "Saving…" : "Save changes"}
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -624,10 +886,6 @@ export default function ReportsPage() {
                   <h2 className="text-sm font-black text-slate-900">
                     Attendance Register Filter
                   </h2>
-                  <p className="text-xs text-slate-500 font-medium">
-                    Filter by class, subject, and date range to inspect or export
-                    student records
-                  </p>
                 </div>
 
                 {/* Export Button */}
@@ -781,7 +1039,7 @@ export default function ReportsPage() {
 
             {/* Batch Register Metric Summary Cards */}
             {batchData?.students?.length > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <div className="bg-white border border-slate-200/90 rounded-2xl p-3.5 text-center shadow-xs">
                   <p className="text-2xl font-black text-slate-900">
                     {batchData.students.length}
@@ -806,17 +1064,6 @@ export default function ReportsPage() {
                   </p>
                   <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600 mt-1">
                     Batch Average %
-                  </p>
-                </div>
-                <div className="bg-teal-50/80 border border-teal-200/80 rounded-2xl p-3.5 text-center shadow-xs">
-                  <p className="text-2xl font-black text-teal-800">
-                    {batchStatsSummary.regularCount}
-                    <span className="text-xs font-bold text-teal-600 ml-1">
-                      ({batchStatsSummary.regularPct}%)
-                    </span>
-                  </p>
-                  <p className="text-[10px] font-black uppercase tracking-wider text-teal-600 mt-1">
-                    Regular (≥75%)
                   </p>
                 </div>
               </div>
@@ -896,14 +1143,13 @@ export default function ReportsPage() {
                         <tr className="bg-slate-50/80 text-[10px] font-black uppercase tracking-wider text-slate-400 border-b border-slate-100">
                           <th className="py-3 px-4 w-12 text-center">#</th>
                           <th className="py-3 px-4 w-28">Roll No</th>
-                          <th className="py-3 px-4">Student Name</th>
+                          <th className="py-3 px-4">Name</th>
                           <th className="py-3 px-4 text-center w-36">
-                            Marked Classes
+                            Total
                           </th>
                           <th className="py-3 px-4 w-40 text-center">
-                            Attendance Rate
+                            Percentage
                           </th>
-                          <th className="py-3 px-4 text-center w-28">Status</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-xs">
@@ -918,24 +1164,6 @@ export default function ReportsPage() {
                             : pct >= 60
                             ? "text-amber-700 bg-amber-50 border-amber-200"
                             : "text-rose-700 bg-rose-50 border-rose-200";
-
-                          const statusBadge = !isMarked ? (
-                            <span className="text-[10px] font-bold text-slate-400">
-                              No Data
-                            </span>
-                          ) : pct >= 75 ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-800">
-                              Regular
-                            </span>
-                          ) : pct >= 60 ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-800">
-                              Warning
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800">
-                              Shortage
-                            </span>
-                          );
 
                           return (
                             <tr
@@ -954,13 +1182,9 @@ export default function ReportsPage() {
                                 {student.name}
                               </td>
                               <td className="py-3 px-4 text-center font-bold">
-                                <span className="text-emerald-700">
-                                  {student.attended || 0}
-                                </span>
+                                <span className="text-emerald-700">{student.attended || 0}</span>
                                 <span className="text-slate-300 mx-1">/</span>
-                                <span className="text-slate-500">
-                                  {student.total || 0}
-                                </span>
+                                <span className="text-slate-500">{student.total || 0}</span>
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <div className="flex items-center justify-center gap-2">
@@ -982,9 +1206,6 @@ export default function ReportsPage() {
                                     {isMarked ? `${pct}%` : "—"}
                                   </span>
                                 </div>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                {statusBadge}
                               </td>
                             </tr>
                           );
@@ -1020,13 +1241,13 @@ export default function ReportsPage() {
                                 {student.name}
                               </p>
                               <p className="text-[10px] text-slate-400 font-bold mt-0.5">
-                                {student.attended || 0} of {student.total || 0}{" "}
-                                classes
+                                {student.attended || 0} of {student.total || 0} classes
                               </p>
                             </div>
                           </div>
 
                           <div className="shrink-0 text-right">
+                            <p className="mb-0.5 text-[9px] font-semibold text-slate-400">Attendance Rate</p>
                             <span
                               className={`px-2.5 py-1 rounded-lg text-xs font-black border ${pctColor}`}
                             >
@@ -1058,7 +1279,13 @@ export default function ReportsPage() {
                   type="text"
                   placeholder="Type student name or roll number (e.g. 12-001)..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => {
+                    studentHistoryRequestRef.current += 1;
+                    setSearchQuery(e.target.value);
+                    setSelectedStudent(null);
+                    setStudentHistoryData(null);
+                    setLoadingStudent(false);
+                  }}
                   className="w-full bg-slate-100 hover:bg-slate-100/80 border border-slate-200 rounded-xl pl-9 pr-8 py-2.5 text-xs font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-teal-500/20"
                 />
                 <svg
@@ -1078,9 +1305,11 @@ export default function ReportsPage() {
                 {searchQuery && (
                   <button
                     onClick={() => {
+                      studentHistoryRequestRef.current += 1;
                       setSearchQuery("");
                       setSelectedStudent(null);
                       setStudentHistoryData(null);
+                      setLoadingStudent(false);
                     }}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
                   >

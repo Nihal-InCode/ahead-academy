@@ -2,7 +2,7 @@
 import sqlite3
 from datetime import datetime as dt
 import datetime
-import sys, json, os, re, shutil, math
+import sys, json, os, re, shutil, math, hashlib
 import io
 import html
 
@@ -24,6 +24,252 @@ def get_ist_now():
     """Returns the current datetime in IST (UTC + 5:30) regardless of server timezone."""
     # Use UTC then add 5:30 for India
     return dt.utcnow() + datetime.timedelta(hours=5, minutes=30)
+
+
+def _roster_normalize(value):
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def _roster_subject_name(value):
+    name = " ".join(str(value or "").strip().split())
+    if _roster_normalize(name) == "accounts":
+        return "Accounting"
+    return name
+
+
+def _roster_import_snapshot(c):
+    snapshot = {
+        "classes": c.execute("SELECT id, name, is_active FROM classes ORDER BY id").fetchall(),
+        "students": c.execute("SELECT id, roll_no, name, class, is_active FROM students ORDER BY id").fetchall(),
+        "subjects": c.execute("SELECT id, name, is_active FROM subjects ORDER BY id").fetchall(),
+        "assignments": c.execute("SELECT student_id, subject_id FROM student_subjects ORDER BY student_id, subject_id").fetchall(),
+    }
+    return hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _build_class_roster_import_plan(c, workbook_classes):
+    errors = []
+    changes = []
+    workbook_classes = workbook_classes if isinstance(workbook_classes, list) else []
+
+    class_rows = c.execute("SELECT id, name, is_active FROM classes ORDER BY id").fetchall()
+    class_by_name = {_roster_normalize(row[1]): {"id": row[0], "name": row[1], "isActive": bool(row[2])} for row in class_rows}
+    student_rows = c.execute("SELECT id, roll_no, name, class, is_active FROM students ORDER BY id").fetchall()
+    students_by_id = {int(row[0]): {"id": int(row[0]), "rollNo": row[1] or "", "name": row[2] or "", "className": row[3] or "", "isActive": bool(row[4])} for row in student_rows}
+    students_by_roll_no = {_roster_normalize(student["rollNo"]): student for student in students_by_id.values() if student["rollNo"]}
+    students_by_name = {}
+    for student in students_by_id.values():
+        if student["isActive"]:
+            students_by_name.setdefault(_roster_normalize(student["name"]), []).append(student)
+
+    subject_rows = c.execute("SELECT id, name, is_active FROM subjects ORDER BY id").fetchall()
+    subjects_by_key = {}
+    for row in subject_rows:
+        display_name = _roster_subject_name(row[1])
+        key = _roster_normalize(display_name)
+        if key and key not in subjects_by_key:
+            subjects_by_key[key] = {"id": int(row[0]), "name": display_name, "isActive": bool(row[2])}
+
+    assignment_rows = c.execute("""
+        SELECT ss.student_id, sub.name
+        FROM student_subjects ss
+        JOIN subjects sub ON sub.id=ss.subject_id
+    """).fetchall()
+    assignments_by_student = {}
+    subjects_by_class = {}
+    for student_id, subject_name in assignment_rows:
+        key = _roster_normalize(_roster_subject_name(subject_name))
+        assignments_by_student.setdefault(int(student_id), set()).add(key)
+        student = students_by_id.get(int(student_id))
+        if student and student["isActive"]:
+            subjects_by_class.setdefault(_roster_normalize(student["className"]), set()).add(key)
+
+    desired_classes = []
+    seen_classes = set()
+    imported_student_classes = {}
+    imported_student_entries = {}
+    imported_new_roll_classes = {}
+
+    def add_change(change_type, title, detail, class_name, student_id=None, before=None, after=None):
+        changes.append({"type": change_type, "title": title, "detail": detail, "className": class_name, "studentId": student_id, "before": before, "after": after})
+
+    for class_item in workbook_classes:
+        if not isinstance(class_item, dict):
+            errors.append("One worksheet could not be read as a class.")
+            continue
+        class_name = " ".join(str(class_item.get("className") or "").strip().split())
+        class_key = _roster_normalize(class_name)
+        if not class_name:
+            errors.append("A worksheet is missing its class name.")
+            continue
+        if class_key in seen_classes:
+            errors.append(f"The workbook contains the class '{class_name}' more than once.")
+            continue
+        seen_classes.add(class_key)
+
+        current_class = class_by_name.get(class_key)
+        desired_subjects = []
+        desired_subject_keys = set()
+        desired_students = {}
+        for subject_item in class_item.get("subjects") or []:
+            if not isinstance(subject_item, dict):
+                continue
+            subject_input = " ".join(str(subject_item.get("name") or "").strip().split())
+            subject_name = _roster_subject_name(subject_input)
+            subject_key = _roster_normalize(subject_name)
+            if not subject_key:
+                continue
+            if subject_key in desired_subject_keys:
+                errors.append(f"{class_name} has the subject '{subject_name}' more than once.")
+                continue
+            desired_subject_keys.add(subject_key)
+            current_subject = subjects_by_key.get(subject_key)
+            desired_subjects.append({"name": current_subject["name"] if current_subject else subject_name, "key": subject_key, "id": current_subject["id"] if current_subject else None})
+
+            for member in subject_item.get("students") or []:
+                if not isinstance(member, dict):
+                    continue
+                name = " ".join(str(member.get("name") or "").strip().split())
+                name_key = _roster_normalize(name)
+                if not name_key:
+                    continue
+                raw_roll_no = member.get("rollNo")
+                raw_id = member.get("studentId")
+                student_id = None
+                if raw_roll_no not in (None, ""):
+                    student = students_by_roll_no.get(_roster_normalize(raw_roll_no))
+                    if student:
+                        student_id = student["id"]
+                elif raw_id not in (None, ""):
+                    try:
+                        student_id = int(str(raw_id).strip())
+                    except (TypeError, ValueError):
+                        errors.append(f"{class_name} / {subject_name}: '{name}' has an invalid student ID.")
+                        continue
+                    if student_id not in students_by_id:
+                        errors.append(f"{class_name} / {subject_name}: student ID {student_id} was not found. Leave the ID blank only for a new student.")
+                        continue
+                else:
+                    exact_matches = students_by_name.get(name_key, [])
+                    same_class_matches = [s for s in exact_matches if _roster_normalize(s["className"]) == class_key]
+                    if len(same_class_matches) == 1:
+                        student_id = same_class_matches[0]["id"]
+                    elif len(same_class_matches) > 1:
+                        errors.append(f"{class_name} / {subject_name}: '{name}' matches more than one student; keep the student ID in the workbook.")
+                        continue
+                    elif len(exact_matches) == 1:
+                        student_id = exact_matches[0]["id"]
+                    elif len(exact_matches) > 1:
+                        errors.append(f"{class_name} / {subject_name}: '{name}' is ambiguous without a student ID.")
+                        continue
+
+                identity = ("id", student_id) if student_id is not None else (("new_roll", class_key, _roster_normalize(raw_roll_no)) if raw_roll_no not in (None, "") else ("new", class_key, name_key))
+                existing_entry = desired_students.get(identity)
+                if existing_entry and _roster_normalize(existing_entry["name"]) != name_key:
+                    errors.append(f"Student roll number '{raw_roll_no or existing_entry.get('rollNo')}' has different names in the {class_name} worksheet.")
+                    continue
+                if not existing_entry:
+                    existing_student = students_by_id.get(student_id) if student_id is not None else None
+                    desired_students[identity] = {
+                        "studentId": student_id,
+                        "name": name,
+                        "className": class_name,
+                        "subjects": set(),
+                        "existing": existing_student,
+                        "rollNo": str(raw_roll_no).strip() if raw_roll_no not in (None, "") else (existing_student["rollNo"] if existing_student else ""),
+                    }
+                desired_students[identity]["subjects"].add(subject_key)
+
+        if not desired_subjects:
+            errors.append(f"{class_name} has no subject columns.")
+        desired_class = {
+            "className": current_class["name"] if current_class else class_name,
+            "classKey": class_key,
+            "classId": current_class["id"] if current_class else None,
+            "classActive": current_class["isActive"] if current_class else False,
+            "subjects": desired_subjects,
+            "subjectKeys": desired_subject_keys,
+            "students": list(desired_students.values()),
+        }
+        desired_classes.append(desired_class)
+
+        if not current_class:
+            add_change("class_added", "New class", class_name, class_name)
+        elif not current_class["isActive"]:
+            add_change("class_reactivated", "Class reactivated", class_name, current_class["name"])
+
+        existing_subject_keys = subjects_by_class.get(class_key, set())
+        for subject in desired_subjects:
+            if subject["key"] not in existing_subject_keys:
+                add_change("subject_added", "Subject added", subject["name"], desired_class["className"])
+        for subject_key in sorted(existing_subject_keys - desired_subject_keys):
+            current_name = subjects_by_key.get(subject_key, {}).get("name") or subject_key
+            add_change("subject_removed", "Subject removed", current_name, desired_class["className"])
+
+        for student in desired_class["students"]:
+            student_id = student["studentId"]
+            student["className"] = desired_class["className"]
+            if student_id is None:
+                if student["rollNo"]:
+                    imported_new_roll_classes.setdefault(_roster_normalize(student["rollNo"]), set()).add(class_key)
+                roll_detail = f" · {student['rollNo']}" if student["rollNo"] else ""
+                add_change("student_added", "Student added", f"{student['name']}{roll_detail} · {', '.join(s['name'] for s in desired_subjects if s['key'] in student['subjects'])}", desired_class["className"])
+                continue
+            existing = student["existing"]
+            imported_student_classes.setdefault(student_id, set()).add(class_key)
+            imported_student_entries[student_id] = student
+            if _roster_normalize(existing["className"]) != class_key:
+                add_change("student_moved", "Student class changed", f"{existing['name']} · {existing['className']} → {desired_class['className']}", desired_class["className"], student_id, existing["className"], desired_class["className"])
+            elif _roster_normalize(existing["name"]) != _roster_normalize(student["name"]):
+                add_change("student_renamed", "Student name changed", f"{existing['name']} → {student['name']}", desired_class["className"], student_id, existing["name"], student["name"])
+            if _roster_normalize(existing["rollNo"]) != _roster_normalize(student["rollNo"]):
+                add_change("student_roll_changed", "Roll number changed", f"{student['name']} · {existing['rollNo']} → {student['rollNo']}", desired_class["className"], student_id, existing["rollNo"], student["rollNo"])
+            if not existing["isActive"]:
+                add_change("student_reactivated", "Student reactivated", student["name"], desired_class["className"], student_id)
+            previous_subjects = assignments_by_student.get(student_id, set())
+            added_subject_keys = student["subjects"] - previous_subjects
+            removed_subject_keys = previous_subjects - student["subjects"]
+            if added_subject_keys or removed_subject_keys:
+                added_labels = [subjects_by_key.get(key, {}).get("name") or next((s["name"] for s in desired_subjects if s["key"] == key), key) for key in sorted(added_subject_keys)]
+                removed_labels = [subjects_by_key.get(key, {}).get("name") or key for key in sorted(removed_subject_keys)]
+                change_parts = []
+                if added_labels:
+                    change_parts.append("Added: " + ", ".join(added_labels))
+                if removed_labels:
+                    change_parts.append("Removed: " + ", ".join(removed_labels))
+                add_change("subjects_changed", "Student subjects changed", f"{student['name']} · {'; '.join(change_parts)}", desired_class["className"], student_id, removed_labels, added_labels)
+
+    for student in students_by_id.values():
+        if not student["isActive"]:
+            continue
+        current_class_key = _roster_normalize(student["className"])
+        if current_class_key not in seen_classes:
+            continue
+        if student["id"] in imported_student_classes:
+            if current_class_key in imported_student_classes[student["id"]]:
+                continue
+            continue
+        add_change("student_removed", "Student removed", student["name"], student["className"], student["id"], student["name"], None)
+
+    for class_key, current_class in class_by_name.items():
+        if current_class["isActive"] and class_key not in seen_classes:
+            add_change("class_removed", "Class removed", current_class["name"], current_class["name"])
+
+    for student_id, class_keys in imported_student_classes.items():
+        if len(class_keys) > 1:
+            errors.append(f"Student ID {student_id} appears in more than one class worksheet.")
+
+    for roll_no, class_keys in imported_new_roll_classes.items():
+        if len(class_keys) > 1:
+            errors.append(f"New student roll number '{roll_no}' appears in more than one class worksheet.")
+
+    return {
+        "snapshot": _roster_import_snapshot(c),
+        "changes": changes,
+        "errors": errors,
+        "desiredClasses": desired_classes,
+        "existingStudents": students_by_id,
+    }
 
 def get_remaining_days_excluding_friday():
     """Returns the count of days left in the current month, excluding Fridays."""
@@ -2079,21 +2325,16 @@ def get_student_stats(c, student_id, student_name, student_class, roll_no, start
         SELECT COUNT(DISTINCT date || '-' || IFNULL(subject, 'General')) 
         FROM attendance 
         WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
-    """ + date_sql + subj_att_sql, [student_class] + date_params + subj_att_params)
+    """ + date_sql + subj_att_sql + " AND student_id = ?", [student_class] + date_params + subj_att_params + [student_id])
     count_attendance = c.fetchone()[0] or 0
 
     count_period = 0
     if not subject:
         c.execute("""
-            SELECT IFNULL(SUM(per_session), 0) FROM (
-                SELECT date, period, MAX(cnt) AS per_session FROM (
-                    SELECT date, period, student_id, COUNT(*) AS cnt
-                    FROM period_attendance WHERE TRIM(class) = TRIM(?) COLLATE NOCASE
-            """ + date_sql + """
-                GROUP BY date, period, student_id
-                ) GROUP BY date, period
-            )
-        """, [student_class] + date_params)
+            SELECT COUNT(DISTINCT date || '-' || period)
+            FROM period_attendance
+            WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND student_id = ?
+        """ + date_sql, [student_class, student_id] + date_params)
         count_period = c.fetchone()[0] or 0
 
     c.execute("SELECT COUNT(*) FROM extra_classes WHERE TRIM(class) = TRIM(?) COLLATE NOCASE" + date_sql + subj_extra_sql, [student_class] + date_params + subj_extra_params)
@@ -2113,7 +2354,7 @@ def get_student_stats(c, student_id, student_name, student_class, roll_no, start
     for d, s, subj, p, mode in c.fetchall():
         s_norm = (s or "").strip().upper()
         label = subj or p or "Regular"
-        if s_norm in ("P", "PRESENT", "SL", "PRESENT_ONLINE", "PRESENT_OFFLINE"):
+        if s_norm in ("P", "PRESENT", "PRESENT_ONLINE", "PRESENT_OFFLINE"):
             attended += 1
             log.append((d, label, "P"))
         elif s_norm in ("S", "SICK"):
@@ -2128,7 +2369,7 @@ def get_student_stats(c, student_id, student_name, student_class, roll_no, start
         c.execute("SELECT date, period, status FROM period_attendance WHERE student_id=?" + date_sql + " ORDER BY date ASC, id ASC", [student_id] + date_params)
         for d, p, s in c.fetchall():
             s_norm = (s or "").strip().upper()
-            if s_norm in ("P", "SL", "PRESENT"):
+            if s_norm in ("P", "PRESENT"):
                 attended += 1
                 log.append((d, p, "P"))
             else:
@@ -6085,6 +6326,102 @@ if __name__ == "__main__":
                     classes = [{"id": r, "name": r} for r in sorted(raw_names, key=_c_sort_key)]
                     result = {"success": True, "data": classes}
 
+                elif action == "preview_class_roster_import":
+                    plan = _build_class_roster_import_plan(c, data.get("classes"))
+                    counts = {}
+                    for change in plan["changes"]:
+                        counts[change["type"]] = counts.get(change["type"], 0) + 1
+                    result = {"success": True, "data": {"snapshot": plan["snapshot"], "changes": plan["changes"], "errors": plan["errors"], "summary": counts}}
+                elif action == "apply_class_roster_import":
+                    conn.execute("BEGIN IMMEDIATE")
+                    expected_snapshot = data.get("snapshot")
+                    if not expected_snapshot or _roster_import_snapshot(c) != expected_snapshot:
+                        conn.rollback()
+                        result = {"success": False, "conflict": True, "error": "The class data changed after this preview. Import the workbook again to review the latest changes."}
+                    else:
+                        plan = _build_class_roster_import_plan(c, data.get("classes"))
+                        if plan["errors"]:
+                            conn.rollback()
+                            result = {"success": False, "errors": plan["errors"], "error": "Fix the workbook issues before approving the import."}
+                        else:
+                            try:
+                                assigned_ids = []
+                                included_class_keys = {item["classKey"] for item in plan["desiredClasses"]}
+                                removed_class_keys = {
+                                    _roster_normalize(row[0])
+                                    for row in c.execute("SELECT name FROM classes WHERE is_active=1").fetchall()
+                                    if _roster_normalize(row[0]) not in included_class_keys
+                                }
+                                for class_item in plan["desiredClasses"]:
+                                    class_row = c.execute("SELECT id FROM classes WHERE lower(trim(name))=lower(trim(?))", (class_item["className"],)).fetchone()
+                                    if class_row:
+                                        class_id = int(class_row[0])
+                                        c.execute("UPDATE classes SET is_active=1 WHERE id=?", (class_id,))
+                                    else:
+                                        c.execute("INSERT INTO classes (name, is_active) VALUES (?, 1)", (class_item["className"],))
+                                        class_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+                                    subject_ids = {}
+                                    for subject in class_item["subjects"]:
+                                        subject_row = c.execute("SELECT id FROM subjects WHERE lower(trim(name))=lower(trim(?))", (subject["name"],)).fetchone()
+                                        if subject_row:
+                                            subject_id = int(subject_row[0])
+                                            c.execute("UPDATE subjects SET is_active=1 WHERE id=?", (subject_id,))
+                                        else:
+                                            c.execute("INSERT INTO subjects (name, is_active) VALUES (?, 1)", (subject["name"],))
+                                            subject_id = c.execute("SELECT last_insert_rowid()").fetchone()[0]
+                                        subject_ids[subject["key"]] = subject_id
+
+                                    for student in class_item["students"]:
+                                        student_id = student["studentId"]
+                                        if student_id is None:
+                                            roll_rows = c.execute("SELECT roll_no FROM students WHERE class=?", (class_item["className"],)).fetchall()
+                                            max_num = 0
+                                            prefix = re.sub(r"^(class|grade|standard|std)\s*", "", class_item["className"], flags=re.I).strip() or "1"
+                                            for (roll_no,) in roll_rows:
+                                                match = re.match(r"^(.*?)([-_])?(\d+)$", str(roll_no or ""))
+                                                if match:
+                                                    max_num = max(max_num, int(match.group(3)))
+                                                    if match.group(1) or match.group(2):
+                                                        prefix = (match.group(1) or "") + (match.group(2) or "-")
+                                            roll_no = str(student.get("rollNo") or "").strip()
+                                            if not roll_no:
+                                                if not prefix.endswith(("-", "_")):
+                                                    prefix += "-"
+                                                next_num = max_num + 1
+                                                roll_no = f"{prefix}{next_num:03d}"
+                                                while c.execute("SELECT 1 FROM students WHERE roll_no=?", (roll_no,)).fetchone():
+                                                    next_num += 1
+                                                    roll_no = f"{prefix}{next_num:03d}"
+                                            elif c.execute("SELECT 1 FROM students WHERE roll_no=?", (roll_no,)).fetchone():
+                                                raise ValueError(f"Roll number '{roll_no}' is already assigned to another student.")
+                                            c.execute("INSERT INTO students (roll_no, name, class, learning_mode, is_active) VALUES (?, ?, ?, 'Offline', 1)", (roll_no, student["name"], class_item["className"]))
+                                            student_id = int(c.execute("SELECT last_insert_rowid()").fetchone()[0])
+                                        else:
+                                            c.execute("UPDATE students SET roll_no=?, name=?, class=?, is_active=1 WHERE id=?", (student["rollNo"], student["name"], class_item["className"], student_id))
+                                        c.execute("DELETE FROM student_subjects WHERE student_id=?", (student_id,))
+                                        for subject_key in student["subjects"]:
+                                            c.execute("INSERT OR IGNORE INTO student_subjects (student_id, subject_id) VALUES (?, ?)", (student_id, subject_ids[subject_key]))
+                                        current = c.execute("SELECT roll_no FROM students WHERE id=?", (student_id,)).fetchone()
+                                        assigned_ids.append({"studentId": student_id, "name": student["name"], "className": class_item["className"], "rollNo": current[0] if current else ""})
+
+                                for student in plan["existingStudents"].values():
+                                    if student["isActive"] and _roster_normalize(student["className"]) in included_class_keys:
+                                        # Imported IDs have already been reactivated and assigned; absent IDs are soft removed.
+                                        if not c.execute("SELECT 1 FROM students WHERE id=? AND is_active=1 AND class=?", (student["id"], student["className"])).fetchone():
+                                            continue
+                                        if not any(entry["studentId"] == student["id"] for cls in plan["desiredClasses"] for entry in cls["students"]):
+                                            c.execute("UPDATE students SET is_active=0 WHERE id=?", (student["id"],))
+                                            c.execute("DELETE FROM student_subjects WHERE student_id=?", (student["id"],))
+                                for class_name in [row[0] for row in c.execute("SELECT name FROM classes WHERE is_active=1").fetchall() if _roster_normalize(row[0]) in removed_class_keys]:
+                                    c.execute("UPDATE classes SET is_active=0 WHERE name=?", (class_name,))
+                                    c.execute("UPDATE students SET is_active=0 WHERE class=?", (class_name,))
+                                    c.execute("DELETE FROM student_subjects WHERE student_id IN (SELECT id FROM students WHERE class=?)", (class_name,))
+                                conn.commit()
+                                result = {"success": True, "data": {"assignedStudents": assigned_ids, "summary": {"students": len(assigned_ids), "classes": len(plan["desiredClasses"])}}}
+                            except Exception:
+                                conn.rollback()
+                                raise
                 elif action == "add_class":
                     name = str(data.get("name") or "").strip()
                     if not name:
@@ -6539,6 +6876,28 @@ if __name__ == "__main__":
                         c.execute("SELECT COUNT(*) FROM students WHERE class=? AND is_active=1", (cls,))
                         student_total = c.fetchone()[0] or 0
 
+                        c.execute("""
+                            SELECT
+                                COALESCE(NULLIF(TRIM(subject), ''), 'General') AS subject_name,
+                                COUNT(*),
+                                SUM(CASE WHEN status='P' THEN 1 ELSE 0 END),
+                                SUM(CASE WHEN status='P' AND learning_mode='Online' THEN 1 ELSE 0 END),
+                                SUM(CASE WHEN status='P' AND learning_mode='Offline' THEN 1 ELSE 0 END)
+                            FROM attendance
+                            WHERE date=? AND class=?
+                            GROUP BY COALESCE(NULLIF(TRIM(subject), ''), 'General')
+                            ORDER BY subject_name COLLATE NOCASE
+                        """, (date, cls))
+                        subject_rows = c.fetchall()
+                        subject_summaries = [{
+                            "name": row[0],
+                            "marked": row[1] or 0,
+                            "present": row[2] or 0,
+                            "absent": max(0, (row[1] or 0) - (row[2] or 0)),
+                            "online": row[3] or 0,
+                            "offline": row[4] or 0,
+                        } for row in subject_rows]
+
                         report_data.append({
                             "class": cls,
                             "date": date,
@@ -6548,10 +6907,95 @@ if __name__ == "__main__":
                             "absent": max(0, total - present),
                             "online": online,
                             "offline": offline,
-                            "percent": round((present / total) * 100, 2) if total else 0
+                            "percent": round((present / total) * 100, 2) if total else 0,
+                            "subjects": subject_summaries,
                         })
 
                     result = {"success": True, "data": report_data}
+
+                elif action == "get_daily_attendance_details":
+                    class_id = str(data.get("classId") or "").strip()
+                    subject_name = str(data.get("subject") or "").strip()
+                    date = str(data.get("date") or "").strip()
+                    try:
+                        dt.strptime(date, "%Y-%m-%d")
+                    except Exception:
+                        result = {"success": False, "message": "Invalid attendance date."}
+                    else:
+                        if not class_id or not subject_name:
+                            result = {"success": False, "message": "Class and subject are required."}
+                        else:
+                            c.execute("""
+                                SELECT a.student_id, s.roll_no, s.name, a.status, a.learning_mode
+                                FROM attendance a
+                                LEFT JOIN students s ON s.id=a.student_id
+                                WHERE a.date=? AND a.class=?
+                                  AND COALESCE(NULLIF(TRIM(a.subject), ''), 'General')=?
+                                ORDER BY s.roll_no, s.name
+                            """, (date, class_id, subject_name))
+                            records = [{
+                                "studentId": row[0],
+                                "rollNo": row[1] or "",
+                                "name": row[2] or "Unknown student",
+                                "status": row[3] or "A",
+                                "learningMode": row[4] or "Offline",
+                            } for row in c.fetchall()]
+                            result = {"success": True, "data": records}
+
+                elif action == "update_daily_attendance":
+                    class_id = str(data.get("classId") or "").strip()
+                    subject_name = str(data.get("subject") or "").strip()
+                    date = str(data.get("date") or "").strip()
+                    teacher_id = data.get("teacher_id", 1)
+                    records = data.get("records") or []
+                    try:
+                        dt.strptime(date, "%Y-%m-%d")
+                    except Exception:
+                        result = {"success": False, "message": "Invalid attendance date."}
+                    else:
+                        if not class_id or not subject_name or not records:
+                            result = {"success": False, "message": "Class, subject, date and records are required."}
+                        else:
+                            status_map = {
+                                "present_online": ("P", "Online"),
+                                "present_offline": ("P", "Offline"),
+                                "absent": ("A", ""),
+                                "special_leave": ("SL", ""),
+                                "sick": ("S", ""),
+                                "leave": ("L", ""),
+                            }
+                            updated = 0
+                            invalid_records = False
+                            for rec in records:
+                                student_id = rec.get("studentId")
+                                status, learning_mode = status_map.get(rec.get("status"), (None, None))
+                                if not student_id or status is None:
+                                    invalid_records = True
+                                    break
+                                c.execute("""
+                                    UPDATE attendance
+                                    SET status=?, learning_mode=?, marked_by=?, created_at=?
+                                    WHERE student_id=? AND date=? AND class=?
+                                      AND COALESCE(NULLIF(TRIM(subject), ''), 'General')=?
+                                """, (
+                                    status,
+                                    learning_mode,
+                                    teacher_id,
+                                    get_ist_now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    student_id,
+                                    date,
+                                    class_id,
+                                    subject_name,
+                                ))
+                                updated += c.rowcount
+                            if invalid_records:
+                                conn.rollback()
+                                result = {"success": False, "message": "One or more attendance updates are invalid."}
+                            elif updated == 0:
+                                result = {"success": False, "message": "No matching attendance records were found for this class, subject and date."}
+                            else:
+                                conn.commit()
+                                result = {"success": True, "data": {"updated": updated}}
 
                 elif action == "get_class_average_attendance":
                     c.execute("""
@@ -6628,12 +7072,34 @@ if __name__ == "__main__":
                     else:
                         subject = str(subject).strip()
 
-                    c.execute("""
-                        SELECT id, roll_no, name 
-                        FROM students 
-                        WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND (is_active IS NULL OR is_active != 0)
-                        ORDER BY roll_no
-                    """, (class_id,))
+                    if subject:
+                        c.execute("""
+                            SELECT DISTINCT s.id, s.roll_no, s.name
+                            FROM students s
+                            WHERE TRIM(s.class) = TRIM(?) COLLATE NOCASE
+                              AND (s.is_active IS NULL OR s.is_active != 0)
+                              AND (
+                                EXISTS (
+                                    SELECT 1 FROM student_subjects ss
+                                    JOIN subjects sub ON sub.id=ss.subject_id
+                                    WHERE ss.student_id=s.id AND TRIM(sub.name)=TRIM(?) COLLATE NOCASE
+                                )
+                                OR EXISTS (
+                                    SELECT 1 FROM attendance a
+                                    WHERE a.student_id=s.id
+                                      AND TRIM(a.class)=TRIM(?) COLLATE NOCASE
+                                      AND COALESCE(NULLIF(TRIM(a.subject), ''), 'General')= ? COLLATE NOCASE
+                                )
+                              )
+                            ORDER BY s.roll_no
+                        """, (class_id, subject, class_id, subject))
+                    else:
+                        c.execute("""
+                            SELECT id, roll_no, name
+                            FROM students
+                            WHERE TRIM(class) = TRIM(?) COLLATE NOCASE AND (is_active IS NULL OR is_active != 0)
+                            ORDER BY roll_no
+                        """, (class_id,))
                     students = c.fetchall()
                     
                     batch_data = []
@@ -6692,6 +7158,46 @@ if __name__ == "__main__":
 
                     class_avg = round((total_presents_sum / total_classes_sum) * 100, 1) if total_classes_sum > 0 else 0
 
+                    session_date_sql = ""
+                    session_date_params = []
+                    if start_date:
+                        session_date_sql += " AND date >= ?"
+                        session_date_params.append(start_date)
+                    if end_date:
+                        session_date_sql += " AND date <= ?"
+                        session_date_params.append(end_date)
+                    if subject:
+                        c.execute("""
+                            SELECT COUNT(*) FROM (
+                                SELECT 'daily|' || date || '|' || COALESCE(NULLIF(TRIM(subject), ''), 'General') AS session_key
+                                FROM attendance
+                                WHERE TRIM(class)=TRIM(?) COLLATE NOCASE
+                                  AND (TRIM(subject)=TRIM(?) COLLATE NOCASE OR (?='General' AND (subject IS NULL OR TRIM(subject)='')))
+                        """ + session_date_sql + """ GROUP BY date, COALESCE(NULLIF(TRIM(subject), ''), 'General')
+                                UNION
+                                SELECT 'extra|' || id AS session_key
+                                FROM extra_classes
+                                WHERE TRIM(class)=TRIM(?) COLLATE NOCASE AND TRIM(subject)=TRIM(?) COLLATE NOCASE
+                        """ + session_date_sql + ")", (class_id, subject, subject) + tuple(session_date_params) + (class_id, subject) + tuple(session_date_params))
+                    else:
+                        c.execute("""
+                            SELECT COUNT(*) FROM (
+                                SELECT 'daily|' || date || '|' || COALESCE(NULLIF(TRIM(subject), ''), 'General') AS session_key
+                                FROM attendance
+                                WHERE TRIM(class)=TRIM(?) COLLATE NOCASE
+                        """ + session_date_sql + """ GROUP BY date, COALESCE(NULLIF(TRIM(subject), ''), 'General')
+                                UNION
+                                SELECT 'period|' || date || '|' || period AS session_key
+                                FROM period_attendance
+                                WHERE TRIM(class)=TRIM(?) COLLATE NOCASE
+                        """ + session_date_sql + """ GROUP BY date, period
+                                UNION
+                                SELECT 'extra|' || id AS session_key
+                                FROM extra_classes
+                                WHERE TRIM(class)=TRIM(?) COLLATE NOCASE
+                        """ + session_date_sql + ")", (class_id,) + tuple(session_date_params) + (class_id,) + tuple(session_date_params) + (class_id,) + tuple(session_date_params))
+                    held_sessions = c.fetchone()[0] or 0
+
                     result = {
                         "success": True, 
                         "data": {
@@ -6701,7 +7207,8 @@ if __name__ == "__main__":
                             "from": data_from, 
                             "to": data_to,
                             "totalStudents": len(batch_data),
-                            "classAverage": class_avg
+                            "classAverage": class_avg,
+                            "heldSessions": held_sessions,
                         }
                     }
 

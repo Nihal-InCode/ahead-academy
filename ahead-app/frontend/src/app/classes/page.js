@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -11,10 +11,47 @@ import {
   updateStudent,
   addStudent,
   deactivateStudent,
+  previewClassRosterImport,
+  applyClassRosterImport,
 } from "@/lib/api";
 import { useLoading } from "@/context/LoadingContext";
 import AppHeader from "@/components/AppHeader";
 import PencilLoader from "@/components/PencilLoader";
+import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
+
+const cleanRosterText = (value) => String(value ?? "").trim().replace(/\s+/g, " ");
+const rosterKey = (value) => cleanRosterText(value).toLocaleLowerCase();
+
+function parseRosterWorkbook(workbook) {
+  const parsedClasses = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { header: 1, defval: "", raw: false });
+    const headers = rows[0] || [];
+    const digits = sheetName.match(/\d+/)?.[0];
+    const className = digits ? `Class ${digits}` : cleanRosterText(sheetName);
+    const subjects = [];
+    for (let col = 0; col < headers.length; col += 1) {
+      const header = cleanRosterText(headers[col]);
+      if (!header) continue;
+      const keyHeader = header.match(/^(.*?)\s+(ID|ROLL\s+NO\.?)$/i);
+      if (keyHeader) {
+        const subjectName = cleanRosterText(keyHeader[1]);
+        const usesRollNumber = /^ROLL\s+NO\.?$/i.test(keyHeader[2]);
+        const nameCol = col + 1;
+        subjects.push({
+          name: subjectName,
+          students: rows.slice(1).map((row) => ({ [usesRollNumber ? "rollNo" : "studentId"]: cleanRosterText(row[col]) || null, name: cleanRosterText(row[nameCol]) })).filter((student) => student.name),
+        });
+        col = nameCol;
+      } else {
+        subjects.push({ name: header, students: rows.slice(1).map((row) => ({ studentId: null, name: cleanRosterText(row[col]) })).filter((student) => student.name) });
+      }
+    }
+    if (subjects.length) parsedClasses.push({ className, subjects });
+  });
+  return parsedClasses;
+}
 
 function getRollSuggestions(className, allStudents = [], count = 3) {
   if (!className) return [];
@@ -78,9 +115,13 @@ export default function ClassesPage() {
   const [newClassName, setNewClassName] = useState("");
   const [addingClass, setAddingClass] = useState(false);
 
+  const importInputRef = useRef(null);
+  const [rosterImport, setRosterImport] = useState({ open: false, file: null, classes: [], preview: null, loading: false, saving: false, error: "" });
+
   // Expanded class accordion
   const [expandedClasses, setExpandedClasses] = useState({});
   const [studentSearch, setStudentSearch] = useState({});
+  const classCardRefs = useRef({});
 
   // Modals
   const [renameModal, setRenameModal] = useState({
@@ -144,11 +185,89 @@ export default function ClassesPage() {
     setTimeout(() => setSuccessMsg(""), 3500);
   };
 
+  const handleRosterWorkbook = async (file) => {
+    if (!file) return;
+    setRosterImport({ open: true, file, classes: [], preview: null, loading: true, saving: false, error: "" });
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const parsedClasses = parseRosterWorkbook(workbook);
+      if (!parsedClasses.length) throw new Error("No class sheets with subject columns were found.");
+      const preview = await previewClassRosterImport(parsedClasses);
+      if (!preview?.snapshot) throw new Error(preview?.message || preview?.error || "Could not review this workbook.");
+      setRosterImport((prev) => ({ ...prev, classes: parsedClasses, preview, loading: false }));
+    } catch (err) {
+      setRosterImport((prev) => ({ ...prev, loading: false, error: err.message || "Could not read this workbook." }));
+    }
+  };
+
+  const downloadRosterWithRollNumbers = async (file, assignedStudents) => {
+    if (!file || !Array.isArray(assignedStudents) || !assignedStudents.length) return;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await file.arrayBuffer());
+    const idsByClassName = new Map();
+    const rollsByDatabaseId = new Map();
+    assignedStudents.forEach((entry) => {
+      idsByClassName.set(`${rosterKey(entry.className)}|${rosterKey(entry.name)}`, String(entry.rollNo || ""));
+      rollsByDatabaseId.set(String(entry.studentId), String(entry.rollNo || ""));
+    });
+    workbook.worksheets.forEach((sheet) => {
+      const digits = sheet.name.match(/\d+/)?.[0];
+      const className = digits ? `Class ${digits}` : cleanRosterText(sheet.name);
+      const headerRow = sheet.getRow(1);
+      for (let col = 1; col <= headerRow.cellCount; col += 1) {
+        const value = cleanRosterText(headerRow.getCell(col).text);
+        const match = value.match(/^(.*?)\s+(ID|ROLL\s+NO\.?)$/i);
+        if (!match) continue;
+        if (/^ID$/i.test(match[2])) headerRow.getCell(col).value = `${match[1].trim()} Roll No`;
+        for (let row = 2; row <= sheet.rowCount; row += 1) {
+          const idCell = sheet.getRow(row).getCell(col);
+          const name = cleanRosterText(sheet.getRow(row).getCell(col + 1).text);
+          if (!name) continue;
+          const convertedLegacyId = rollsByDatabaseId.get(cleanRosterText(idCell.text));
+          const rollNo = convertedLegacyId || idsByClassName.get(`${rosterKey(className)}|${rosterKey(name)}`);
+          if (rollNo) {
+            idCell.value = rollNo;
+            idCell.numFmt = "@";
+          }
+        }
+        col += 1;
+      }
+    });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${file.name.replace(/\.xlsx?$/i, "")} - updated.xlsx`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const approveRosterImport = async () => {
+    setRosterImport((prev) => ({ ...prev, saving: true, error: "" }));
+    try {
+      const result = await applyClassRosterImport(rosterImport.classes, rosterImport.preview.snapshot);
+      if (!Array.isArray(result?.assignedStudents)) throw new Error(result?.message || result?.error || "Could not save the approved changes.");
+      await downloadRosterWithRollNumbers(rosterImport.file, result.assignedStudents);
+      const changeCount = rosterImport.preview.changes.length;
+      setRosterImport({ open: false, file: null, classes: [], preview: null, loading: false, saving: false, error: "" });
+      await loadData();
+      showNotification(`Approved ${changeCount} roster ${changeCount === 1 ? "change" : "changes"}. Updated workbook downloaded with roll numbers.`);
+    } catch (err) {
+      setRosterImport((prev) => ({ ...prev, saving: false, error: err.message || "Could not save the approved changes." }));
+    }
+  };
+
   const toggleExpand = (className) => {
+    const isCurrentlyExpanded = !!expandedClasses[className];
     setExpandedClasses((prev) => ({
-      ...prev,
       [className]: !prev[className],
     }));
+    if (!isCurrentlyExpanded) {
+      requestAnimationFrame(() => {
+        classCardRefs.current[className]?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
   };
 
   // Add class
@@ -405,8 +524,16 @@ export default function ClassesPage() {
           </form>
         </div>
 
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-blue-50/70 p-3">
+          <div className="min-w-0">
+            <p className="text-xs font-black text-slate-800">Update classes from Excel</p>
+          </div>
+          <input ref={importInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(event) => { handleRosterWorkbook(event.target.files?.[0]); event.target.value = ""; }} />
+          <button type="button" onClick={() => importInputRef.current?.click()} className="shrink-0 rounded-xl bg-blue-600 px-3 py-2 text-[11px] font-black text-white shadow-sm hover:bg-blue-700">Import from Excel</button>
+        </div>
+
         {/* ── ACTIVE CLASSES ACCORDION ── */}
-        <div className="space-y-2.5">
+        <div className="grid grid-cols-2 gap-3">
           {activeClasses.length === 0 ? (
             <div className="bg-white rounded-2xl p-6 text-center text-slate-400 font-bold text-xs border border-slate-200/80">
               No active classes found. Add your first class above.
@@ -424,46 +551,58 @@ export default function ClassesPage() {
                   (s.rollNo || "").toLowerCase().includes(searchQ)
                 );
               });
+              const subjectGroups = new Map();
+              filteredStudents.forEach((student) => {
+                const subjects = Array.isArray(student.subjects) ? student.subjects.filter(Boolean) : [];
+                const groupNames = subjects.length > 0 ? subjects : ["Unassigned"];
+                groupNames.forEach((subject) => {
+                  if (!subjectGroups.has(subject)) subjectGroups.set(subject, []);
+                  subjectGroups.get(subject).push(student);
+                });
+              });
+              const sortedSubjectGroups = [...subjectGroups.entries()].sort(([subjectA], [subjectB]) => {
+                if (subjectA === "Unassigned") return 1;
+                if (subjectB === "Unassigned") return -1;
+                return subjectA.localeCompare(subjectB);
+              });
 
               return (
                 <div
                   key={cls.name}
-                  className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden transition-all"
+                  ref={(element) => { classCardRefs.current[cls.name] = element; }}
+                  className={`scroll-mt-32 bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden transition-all ${isExpanded ? "col-span-2" : ""}`}
                 >
-                  {/* Class Header Bar */}
-                  <div className="p-3.5 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="font-black text-slate-900 text-sm sm:text-base truncate">
-                          {cls.name}
-                        </span>
-                        <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full shrink-0">
-                          {activeCount} students
-                        </span>
-                      </div>
-
-                      <button
-                        onClick={() => toggleExpand(cls.name)}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 shrink-0 ${
-                          isExpanded
-                            ? "bg-blue-600 text-white border-blue-600"
-                            : "bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200"
-                        }`}
-                      >
-                        <span>{isExpanded ? "Hide" : "Students"}</span>
+                  {/* Class card: tap to open subject-wise details */}
+                  <div className="p-2.5 sm:p-3.5 space-y-2.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleExpand(cls.name)}
+                      aria-expanded={isExpanded}
+                      className={`w-full min-h-28 rounded-xl border p-3 text-left transition-colors ${
+                        isExpanded
+                          ? "border-blue-200 bg-blue-50/70"
+                          : "border-slate-100 bg-slate-50/70 hover:border-blue-100 hover:bg-blue-50/40"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-1">
+                        <span className="min-w-0 truncate text-sm font-bold text-slate-800">{cls.name}</span>
                         <svg
-                          className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
+                          className={`mt-0.5 h-4 w-4 shrink-0 text-slate-400 transition-transform duration-200 ${isExpanded ? "rotate-180" : ""}`}
                           fill="none"
                           viewBox="0 0 24 24"
                           stroke="currentColor"
                         >
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 9l-7 7-7-7" />
                         </svg>
-                      </button>
-                    </div>
+                      </div>
+                      <div className="mt-2 flex items-baseline gap-1.5">
+                        <span className="text-3xl font-bold leading-none tracking-tight text-blue-700">{activeCount}</span>
+                        <span className="text-xs font-medium text-slate-500">{activeCount === 1 ? "student" : "students"}</span>
+                      </div>
+                    </button>
 
                     {/* Class Action Bar */}
-                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100">
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-100 pt-2">
                       <button
                         onClick={() => openAddStudentModal(cls.name)}
                         className="text-[11px] font-bold text-blue-600 hover:text-blue-800 transition-colors flex items-center gap-1"
@@ -490,7 +629,9 @@ export default function ClassesPage() {
 
                   {/* ── Expanded Student Section ── */}
                   {isExpanded && (
-                    <div className="bg-slate-50/80 p-3 border-t border-slate-100 space-y-2">
+                    <div
+                      className="bg-slate-50/80 p-3 border-t border-slate-100 space-y-2"
+                    >
                       {/* Search in class */}
                       <input
                         type="text"
@@ -505,57 +646,67 @@ export default function ClassesPage() {
                         className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                       />
 
-                      {/* Student rows */}
-                      <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                        {filteredStudents.length === 0 ? (
+                      {/* Students grouped by their assigned subjects */}
+                      <div className="max-h-[30rem] space-y-3 overflow-y-auto">
+                        {sortedSubjectGroups.length === 0 ? (
                           <div className="p-4 text-center text-slate-400 text-xs font-bold">
                             No students match your filter.
                           </div>
                         ) : (
-                          filteredStudents.map((student) => (
-                            <div
-                              key={student.id}
-                              className={`p-2.5 bg-white rounded-xl border border-slate-200/70 flex items-center justify-between gap-2 ${
-                                !student.isActive ? "opacity-50" : ""
-                              }`}
-                            >
-                              <div className="flex items-center gap-2 min-w-0 flex-1">
-                                <span className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200 whitespace-nowrap shrink-0">
-                                  {student.rollNo}
-                                </span>
-                                <span className="font-black text-slate-900 text-xs truncate">
-                                  {student.name}
-                                </span>
-                                <span
-                                  className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wider shrink-0 ${
-                                    student.learningMode === "Online"
-                                      ? "bg-blue-50 text-blue-700"
-                                      : "bg-emerald-50 text-emerald-700"
-                                  }`}
-                                >
-                                  {student.learningMode || "Offline"}
+                          sortedSubjectGroups.map(([subject, subjectStudents]) => (
+                            <section key={subject} className="space-y-1.5">
+                              <div className="sticky top-0 z-10 flex items-center justify-between rounded-lg border border-blue-100 bg-blue-50/80 px-2.5 py-2">
+                                <h3 className="text-xs font-bold text-blue-900">{subject}</h3>
+                                <span className="text-[10px] font-semibold text-blue-700">
+                                  {subjectStudents.length} {subjectStudents.length === 1 ? "student" : "students"}
                                 </span>
                               </div>
+                              {subjectStudents.map((student) => (
+                                <div
+                                  key={`${subject}-${student.id}`}
+                                  className={`p-2.5 bg-white rounded-xl border border-slate-200/70 flex items-center justify-between gap-2 ${
+                                    !student.isActive ? "opacity-50" : ""
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    <span className="font-mono text-xs font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200 whitespace-nowrap shrink-0">
+                                      {student.rollNo}
+                                    </span>
+                                    <span className="font-black text-slate-900 text-xs truncate">
+                                      {student.name}
+                                    </span>
+                                    <span
+                                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md uppercase tracking-wider shrink-0 ${
+                                        student.learningMode === "Online"
+                                          ? "bg-blue-50 text-blue-700"
+                                          : "bg-emerald-50 text-emerald-700"
+                                      }`}
+                                    >
+                                      {student.learningMode || "Offline"}
+                                    </span>
+                                  </div>
 
-                              <div className="flex items-center gap-1 shrink-0">
-                                <button
-                                  onClick={() => openEditStudentModal(student)}
-                                  className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100 transition-colors"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => handleToggleStudentActive(student, !student.isActive)}
-                                  className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
-                                    student.isActive
-                                      ? "text-rose-600 bg-rose-50 hover:bg-rose-100"
-                                      : "text-emerald-600 bg-emerald-50 hover:bg-emerald-100"
-                                  }`}
-                                >
-                                  {student.isActive ? "✕" : "✓"}
-                                </button>
-                              </div>
-                            </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <button
+                                      onClick={() => openEditStudentModal(student)}
+                                      className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-md hover:bg-blue-100 transition-colors"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => handleToggleStudentActive(student, !student.isActive)}
+                                      className={`text-[10px] font-bold px-2 py-1 rounded-md transition-colors ${
+                                        student.isActive
+                                          ? "text-rose-600 bg-rose-50 hover:bg-rose-100"
+                                          : "text-emerald-600 bg-emerald-50 hover:bg-emerald-100"
+                                      }`}
+                                    >
+                                      {student.isActive ? "✕" : "✓"}
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </section>
                           ))
                         )}
                       </div>
@@ -591,6 +742,32 @@ export default function ClassesPage() {
           </div>
         )}
       </div>
+
+      {rosterImport.open && (
+        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-black/55 p-0 backdrop-blur-sm sm:items-center sm:p-4">
+          <div className="flex max-h-[88vh] w-full flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-w-xl sm:rounded-3xl">
+            <div className="border-b border-slate-100 p-4 sm:p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div><h3 className="text-base font-black text-slate-900">Review Excel changes</h3><p className="mt-1 truncate text-xs text-slate-500">{rosterImport.file?.name}</p></div>
+                <button type="button" disabled={rosterImport.saving} onClick={() => setRosterImport({ open: false, file: null, classes: [], preview: null, loading: false, saving: false, error: "" })} className="rounded-lg px-2 py-1 text-slate-400 hover:bg-slate-100">✕</button>
+              </div>
+            </div>
+            <div className="overflow-y-auto p-4 sm:p-5">
+              {rosterImport.loading ? <div className="py-10 text-center text-sm font-semibold text-slate-500">Reading the workbook and comparing changes…</div> : null}
+              {rosterImport.error ? <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700">{rosterImport.error}</div> : null}
+              {!rosterImport.loading && rosterImport.preview ? <>
+                {rosterImport.preview.errors?.length > 0 && <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3"><p className="mb-1 text-xs font-black text-rose-800">Please fix these workbook issues</p><ul className="list-disc space-y-1 pl-4 text-xs text-rose-700">{rosterImport.preview.errors.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
+                <p className="mb-3 text-xs font-semibold text-slate-500">{rosterImport.preview.changes.length ? `${rosterImport.preview.changes.length} change${rosterImport.preview.changes.length === 1 ? "" : "s"} found` : "No changes detected"}</p>
+                {rosterImport.preview.changes.length > 0 && <ul className="space-y-2">{rosterImport.preview.changes.map((change, index) => <li key={`${change.type}-${change.studentId || change.className}-${index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="text-xs font-black text-slate-800">{change.title}</p><p className="mt-1 break-words text-xs text-slate-600">{change.detail}</p></div><span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-500">{change.className}</span></div></li>)}</ul>}
+              </> : null}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 p-4">
+              <button type="button" disabled={rosterImport.saving} onClick={() => setRosterImport({ open: false, file: null, classes: [], preview: null, loading: false, saving: false, error: "" })} className="rounded-xl px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-100">Cancel</button>
+              <button type="button" onClick={approveRosterImport} disabled={rosterImport.loading || rosterImport.saving || !rosterImport.preview?.changes?.length || !!rosterImport.preview?.errors?.length} className="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-black text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45">{rosterImport.saving ? "Saving…" : "Approve & Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── RENAME CLASS MODAL ── */}
       {renameModal.isOpen && (
@@ -792,34 +969,6 @@ export default function ClassesPage() {
                   required
                 />
 
-                {/* Quick Select Suggestion Pills */}
-                {addStudentModal.suggestions && addStudentModal.suggestions.length > 0 && (
-                  <div className="mt-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200/80">
-                    <span className="block text-[10px] font-bold text-slate-400 mb-1.5 uppercase tracking-wider">
-                      Select next number:
-                    </span>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {addStudentModal.suggestions.map((sug) => {
-                        const isSelected = addStudentModal.rollNo === sug;
-                        return (
-                          <button
-                            key={sug}
-                            type="button"
-                            onClick={() => setAddStudentModal((prev) => ({ ...prev, rollNo: sug }))}
-                            className={`font-mono text-xs font-bold px-2.5 py-1 rounded-lg border transition-all flex items-center gap-1 ${
-                              isSelected
-                                ? "bg-teal-600 text-white border-teal-600 shadow-sm shadow-teal-200"
-                                : "bg-white text-slate-700 border-slate-200 hover:border-teal-400 hover:text-teal-700"
-                            }`}
-                          >
-                            <span>{sug}</span>
-                            {isSelected && <span className="text-[10px] font-sans font-bold">✓</span>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
 
               <div>

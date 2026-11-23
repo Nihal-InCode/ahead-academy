@@ -74,7 +74,7 @@ export default function AppHeader({
 
           {/* Title & Context */}
           <div className="min-w-0 flex-1">
-            <h1 className="text-base sm:text-lg font-black tracking-tight text-white leading-tight truncate">
+            <h1 className="text-base sm:text-lg font-bold tracking-tight text-white leading-tight truncate">
               {title}
             </h1>
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -82,7 +82,7 @@ export default function AppHeader({
                 {subtitle || user?.name || "Teacher Portal"}
               </span>
               {user?.role && (
-                <span className="hidden xs:inline-flex items-center rounded-full border border-teal-400/30 bg-teal-500/15 px-2 py-0.2 text-[8px] sm:text-[9px] font-black uppercase tracking-wider text-teal-100">
+                <span className="hidden xs:inline-flex items-center rounded-full border border-teal-400/30 bg-teal-500/15 px-2 py-0.5 text-[10px] font-semibold tracking-normal text-teal-100">
                   {user.role}
                 </span>
               )}

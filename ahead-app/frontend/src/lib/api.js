@@ -246,6 +246,18 @@ export const setClassActive = (name, isActive) =>
         body: JSON.stringify({ isActive }),
     });
 
+export const previewClassRosterImport = (classes) =>
+    apiRequest('/admin/class-roster-import/preview', {
+        method: 'POST',
+        body: JSON.stringify({ classes }),
+    });
+
+export const applyClassRosterImport = (classes, snapshot) =>
+    apiRequest('/admin/class-roster-import/apply', {
+        method: 'POST',
+        body: JSON.stringify({ classes, snapshot }),
+    });
+
 /**
  * Subject Management (Ahead Academy)
  */
@@ -288,6 +300,17 @@ export const getDailyReport = async (date) => {
     if (Array.isArray(res)) return res;
     return [];
 };
+
+export const getDailyAttendanceDetails = (classId, subject, date) => {
+    const params = new URLSearchParams({ class: classId, subject, date });
+    return apiRequest(`/daily-attendance?${params.toString()}`);
+};
+
+export const updateDailyAttendance = (classId, subject, date, records) =>
+    apiRequest('/daily-attendance', {
+        method: 'PUT',
+        body: JSON.stringify({ classId, subject, date, records }),
+    });
 
 export const getBatchReport = (classId, range = null, subject = null) => {
     const params = new URLSearchParams();

@@ -80,10 +80,17 @@ export default function BottomNav() {
       <div className="mx-auto flex max-w-md sm:max-w-xl md:max-w-2xl items-center justify-around px-2 pt-2 pb-1">
         {tabs.map(({ id, path, label, icon }) => {
           const selected = pathname === path;
+          const handleTabClick = () => {
+            if (id === "reports" && selected) {
+              window.dispatchEvent(new Event("ahead:reports-home"));
+              return;
+            }
+            router.push(path);
+          };
           return (
             <button
               key={id}
-              onClick={() => router.push(path)}
+              onClick={handleTabClick}
               className="flex flex-col items-center gap-1 px-3 py-1.5 rounded-2xl transition-all active:scale-90"
               style={{ color: selected ? "#ffffff" : "rgba(255,255,255,0.45)" }}
             >
@@ -94,7 +101,7 @@ export default function BottomNav() {
               >
                 {icon}
               </div>
-              <span className="text-[9px] font-black uppercase tracking-widest text-center">
+              <span className="text-[11px] sm:text-xs font-semibold tracking-normal text-center">
                 {label}
               </span>
               {selected && (

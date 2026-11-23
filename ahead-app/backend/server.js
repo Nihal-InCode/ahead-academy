@@ -1332,6 +1332,38 @@ app.post('/classes/:name/deactivate', authenticateToken, async (req, res) => {
     }
 });
 
+app.post('/admin/class-roster-import/preview', authenticateToken, async (req, res) => {
+    try {
+        if (String(req.user?.role || '').toLowerCase() === 'guest' || String(req.user?.username || '').toLowerCase() === 'guest') {
+            return res.status(403).json({ success: false, message: 'Guest accounts cannot import class data.' });
+        }
+        const classes = req.body?.classes;
+        if (!Array.isArray(classes) || classes.length === 0) {
+            return res.status(400).json({ success: false, message: 'Choose a workbook with at least one class sheet.' });
+        }
+        const result = await callPython({ action: 'preview_class_roster_import', classes });
+        res.status(result.success ? 200 : 400).json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.post('/admin/class-roster-import/apply', authenticateToken, async (req, res) => {
+    try {
+        if (String(req.user?.role || '').toLowerCase() === 'guest' || String(req.user?.username || '').toLowerCase() === 'guest') {
+            return res.status(403).json({ success: false, message: 'Guest accounts cannot import class data.' });
+        }
+        const { classes, snapshot } = req.body || {};
+        if (!Array.isArray(classes) || classes.length === 0 || !snapshot) {
+            return res.status(400).json({ success: false, message: 'Review the workbook before approving the import.' });
+        }
+        const result = await callPython({ action: 'apply_class_roster_import', classes, snapshot });
+        res.status(result.success ? 200 : result.conflict ? 409 : 400).json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
 app.get('/search-students', async (req, res) => {
     try {
         const { q } = req.query;
@@ -1418,6 +1450,43 @@ app.get('/teacher-register-report', authenticateToken, async (req, res) => {
 app.get('/daily-report', authenticateToken, async (req, res) => {
     try {
         const result = await callPython({ action: "get_daily_report", date: req.query.date });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.get('/daily-attendance', authenticateToken, async (req, res) => {
+    try {
+        const { class: classId, subject, date } = req.query;
+        if (!classId || !subject || !date) {
+            return res.status(400).json({ success: false, message: 'Class, subject and date are required.' });
+        }
+        const result = await callPython({ action: 'get_daily_attendance_details', classId, subject, date });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.put('/daily-attendance', authenticateToken, async (req, res) => {
+    try {
+        if (String(req.user?.role || '').toLowerCase() === 'guest' || String(req.user?.username || '').toLowerCase() === 'guest') {
+            return res.status(403).json({ success: false, message: 'Guest accounts cannot edit attendance.' });
+        }
+        const { classId, subject, date, records } = req.body || {};
+        if (!classId || !subject || !date || !Array.isArray(records) || records.length === 0) {
+            return res.status(400).json({ success: false, message: 'Class, subject, date and attendance records are required.' });
+        }
+        const result = await callPython({
+            action: 'update_daily_attendance',
+            classId,
+            subject,
+            date,
+            teacher_id: req.user?.id || 1,
+            records,
+        });
+        if (!result.success) return res.status(400).json(result);
         res.json(result);
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
